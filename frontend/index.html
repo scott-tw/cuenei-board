@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>厝內溝通板 Papan Komunikasi Rumah</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Noto+Sans+TC:wght@400;600;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<!-- 頁首：登入後才顯示 -->
+<header class="top" id="top" hidden>
+  <div class="bar">
+    <div class="brand"><b>厝內溝通板</b><span>Papan Komunikasi Rumah</span></div>
+    <button class="emg-btn" id="emgBtn">緊急<small>Darurat</small></button>
+  </div>
+  <nav class="tabs" id="tabs" role="tablist"></nav>
+</header>
+<div class="offline" id="offline" role="status" hidden>目前離線 · Sedang offline</div>
+
+<main id="main"></main>
+
+<!-- 大卡、緊急、PIN 確認共用的浮層 -->
+<div class="overlay" id="ov" role="dialog" aria-modal="true"><div class="sheet" id="sheet"></div></div>
+<div class="toast" id="toast" role="status"></div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
