@@ -1,0 +1,6 @@
+# 公開儲存庫只放 test/ 與 frontend/；規格、藍本、後端留在本機
+.DS_Store
+.claude/
+SPEC.md
+reference/
+backend/

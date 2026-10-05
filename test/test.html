@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>厝內溝通板 可行性測試</title>
+<style>
+:root{--bg:#eef2ef;--surface:#fff;--ink:#1c2a33;--muted:#5b6b73;--line:#d3dcd8;--ok:#357f50;--bad:#c22f28;--accent:#1f7d80}
+@media (prefers-color-scheme:dark){:root{--bg:#141b1f;--surface:#1e272c;--ink:#e8eeea;--muted:#9fb0b6;--line:#33424a;--ok:#6cc08a;--bad:#ff6b61;--accent:#5cc0c3}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif;font-size:17px;line-height:1.5}
+main{max-width:720px;margin:0 auto;padding:16px 16px 48px}
+h1{font-size:1.3rem;margin:0 0 4px}
+p{margin:0 0 10px;color:var(--muted);font-size:.92rem}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:14px;margin-bottom:14px}
+.panel h2{font-size:1.05rem;margin:0 0 8px}
+.row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px}
+button{font:inherit;color:inherit;cursor:pointer;min-height:48px;border:2px solid var(--ink);background:transparent;border-radius:12px;padding:8px 14px;font-weight:700}
+button.solid{background:var(--ink);color:var(--bg)}
+button:disabled{opacity:.5}
+input{font:inherit;color:inherit;width:100%;min-height:48px;border:2px solid var(--line);background:var(--bg);border-radius:12px;padding:8px 12px}
+.res{flex:1 1 100%;font-size:.95rem;font-weight:700;color:var(--muted);word-break:break-word}
+.res.ok{color:var(--ok)} .res.bad{color:var(--bad)}
+.detail{font-size:.85rem;color:var(--muted);white-space:pre-wrap;word-break:break-word;margin-top:6px}
+textarea{font:inherit;font-size:.85rem;color:inherit;width:100%;min-height:180px;border:2px solid var(--line);background:var(--bg);border-radius:12px;padding:8px 12px}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+</style>
+</head>
+<body>
+<main>
+  <h1>厝內溝通板 可行性測試</h1>
+  <p>由上往下每個按鈕各按一次，最後按「產生測試結果」，把文字複製回報。</p>
+
+  <div class="panel">
+    <h2>環境</h2>
+    <div class="detail" id="env"></div>
+  </div>
+
+  <div class="panel">
+    <h2>1. 華語發音</h2>
+    <div class="row"><button id="b1">播放華語</button><div class="res" id="r1">未測試</div></div>
+    <div class="row"><button id="b1y">有聽到</button><button id="b1n">沒聽到</button></div>
+  </div>
+
+  <div class="panel">
+    <h2>2. 印尼語發音</h2>
+    <div class="row"><button id="b2">播放印尼語</button><div class="res" id="r2">未測試</div></div>
+    <div class="row"><button id="b2y">有聽到</button><button id="b2n">沒聽到</button></div>
+    <div class="detail" id="voices"></div>
+  </div>
+
+  <div class="panel">
+    <h2>3. 麥克風錄音</h2>
+    <p>按下後請說一句話，錄 3 秒後自動播放。</p>
+    <div class="row"><button id="b3">錄音 3 秒</button><div class="res" id="r3">未測試</div></div>
+  </div>
+
+  <div class="panel">
+    <h2>4. 語音辨識</h2>
+    <p>按下後說一句話，說完停頓一下。</p>
+    <div class="row"><button id="b4z">辨識國語</button><div class="res" id="r4z">未測試</div></div>
+    <div class="row"><button id="b4i">辨識印尼語</button><div class="res" id="r4i">未測試</div></div>
+  </div>
+
+  <div class="panel">
+    <h2>5. 翻譯（呼叫後端）</h2>
+    <div id="apiBox">
+      <p>貼上 Apps Script 網頁應用程式網址（結尾是 /exec）。</p>
+      <input id="api" type="url" inputmode="url" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off">
+    </div>
+    <div class="row"><button id="b5">測試翻譯</button><div class="res" id="r5">未測試</div></div>
+    <div class="detail" id="d5"></div>
+  </div>
+
+  <div class="panel">
+    <h2>6. 本機儲存（IndexedDB）</h2>
+    <p>寫入一筆音訊再讀回；有做過第 3 項就用那段錄音，否則用一段測試音。</p>
+    <div class="row"><button id="b6">寫入並讀回</button><div class="res" id="r6">未測試</div></div>
+  </div>
+
+  <div class="panel">
+    <h2>測試結果</h2>
+    <div class="row"><button class="solid" id="bSum">產生測試結果</button><button id="bCopy">複製</button></div>
+    <textarea id="sum" readonly aria-label="測試結果"></textarea>
+  </div>
+</main>
+
+<script>
+/* ---------- 共用 ---------- */
+const $ = s => document.querySelector(s);
+const RESULTS = {};                       // 各項結果，供最後彙整
+const LABELS = {
+  r1: "1 華語發音", r2: "2 印尼語發音", r3: "3 麥克風錄音",
+  r4z: "4 語音辨識 國語", r4i: "4 語音辨識 印尼語", r5: "5 翻譯", r6: "6 IndexedDB"
+};
+// B（Apps Script HtmlService）頁面內會有 google.script.run
+const IN_GAS = typeof google !== "undefined" && google.script && google.script.run;
+
+/* 顯示單項結果：ok 為 true／false／null（進行中） */
+function setResult(id, ok, text) {
+  const el = $("#" + id);
+  el.className = "res" + (ok === true ? " ok" : ok === false ? " bad" : "");
+  el.textContent = (ok === true ? "成功：" : ok === false ? "失敗：" : "") + text;
+  if (ok !== null) RESULTS[id] = (ok ? "成功" : "失敗") + "：" + text;
+}
+const errName = e => (e && (e.name || e.error || e.code)) || String(e);
+
+/* ---------- 環境 ---------- */
+function browserName() {
+  const ua = navigator.userAgent;
+  if (/; wv\)/.test(ua)) return "App 內建瀏覽器（WebView）";
+  if (/SamsungBrowser/.test(ua)) return "Samsung 網際網路";
+  if (/EdgA?\//.test(ua)) return "Edge";
+  if (/CriOS|Chrome/.test(ua)) return "Chrome";
+  if (/Safari/.test(ua)) return "Safari";
+  return "其他";
+}
+function inFrame() { try { return window.self !== window.top } catch (e) { return true } }
+function envText() {
+  return [
+    "部署位置：" + (IN_GAS ? "B（Apps Script HtmlService）" : "A（獨立網址）"),
+    "網址來源：" + location.origin,
+    "瀏覽器：" + browserName(),
+    "嵌入在框架內：" + (inFrame() ? "是" : "否"),
+    "安全連線（secure context）：" + (window.isSecureContext ? "是" : "否"),
+    "UA：" + navigator.userAgent
+  ].join("\n");
+}
+$("#env").textContent = envText();
+
+/* ---------- 1、2 發音 ---------- */
+const TTS_OK = "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
+let voices = [];
+function loadVoices() {
+  try { voices = speechSynthesis.getVoices() } catch (e) { voices = [] }
+  const box = $("#voices");
+  if (!voices.length) { box.textContent = "可用語音：尚未取得（有些裝置要先播放一次才會列出）"; return }
+  const mark = v => /^zh/i.test(v.lang) ? "【華】" : /^(id|in)\b/i.test(v.lang) ? "【印】" : "";
+  box.textContent = "可用語音共 " + voices.length + " 個：\n" +
+    voices.map(v => mark(v) + v.lang + "　" + v.name + (v.localService ? "" : "（需連線）")).join("\n");
+}
+if (TTS_OK) { loadVoices(); speechSynthesis.onvoiceschanged = loadVoices }
+else $("#voices").textContent = "可用語音：此瀏覽器不支援 speechSynthesis";
+
+function pickVoice(lang) {
+  const L = lang.toLowerCase();
+  return voices.find(v => v.lang.toLowerCase().replace("_", "-") === L) ||
+         voices.find(v => v.lang.toLowerCase().startsWith(L.split("-")[0])) || null;
+}
+function testSpeak(id, text, lang) {
+  if (!TTS_OK) { setResult(id, false, "不支援 speechSynthesis"); return }
+  try { speechSynthesis.cancel() } catch (e) {}
+  const u = new SpeechSynthesisUtterance(text); u.lang = lang; u.rate = .85;
+  const v = pickVoice(lang); if (v) u.voice = v;
+  const vn = v ? v.name + "（" + v.lang + "）" : "找不到對應語音，用預設";
+  let done = false;
+  setResult(id, null, "播放中… 語音：" + vn);
+  u.onend = () => { done = true; setResult(id, true, "已播放完畢，語音：" + vn + "。請按下方回報有沒有聽到") };
+  u.onerror = e => { done = true; setResult(id, false, errName(e) + "，語音：" + vn) };
+  // 有些瀏覽器不會觸發任何事件，8 秒後視為無回應
+  setTimeout(() => { if (!done && !RESULTS[id + "h"]) setResult(id, false, "無回應（沒有 onend 也沒有 onerror），語音：" + vn) }, 8000);
+  speechSynthesis.speak(u);
+  loadVoices();
+}
+$("#b1").onclick = () => testSpeak("r1", "阿嬤，要吃飯了", "zh-TW");
+$("#b2").onclick = () => testSpeak("r2", "Nenek, waktunya makan", "id-ID");
+// 人工確認：程式無法知道喇叭是否真的出聲
+const heard = (id, yes) => { RESULTS[id + "h"] = yes ? "有聽到" : "沒聽到"; setResult(id, yes, yes ? "有聽到聲音" : "沒聽到聲音") };
+$("#b1y").onclick = () => heard("r1", true);  $("#b1n").onclick = () => heard("r1", false);
+$("#b2y").onclick = () => heard("r2", true);  $("#b2n").onclick = () => heard("r2", false);
+
+/* ---------- 3 麥克風錄音 ---------- */
+let lastBlob = null;                      // 第 6 項會拿來存
+$("#b3").onclick = async () => {
+  const btn = $("#b3");
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { setResult("r3", false, "不支援 getUserMedia"); return }
+  if (!window.MediaRecorder) { setResult("r3", false, "不支援 MediaRecorder"); return }
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }) }
+  catch (e) { setResult("r3", false, "getUserMedia " + errName(e)); return }
+  btn.disabled = true;
+  try {
+    const chunks = [];
+    const rec = new MediaRecorder(stream);
+    rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data) };
+    rec.onerror = e => setResult("r3", false, "MediaRecorder " + errName(e.error || e));
+    rec.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());
+      btn.disabled = false;
+      const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
+      if (!blob.size) { setResult("r3", false, "錄到 0 位元組"); return }
+      lastBlob = blob;
+      const info = blob.type + "，" + Math.round(blob.size / 1024) + " KB";
+      const a = new Audio(URL.createObjectURL(blob));
+      a.onended = () => setResult("r3", true, "錄音並播放完畢（" + info + "）");
+      a.play().then(() => setResult("r3", null, "播放中…（" + info + "）"))
+              .catch(e => setResult("r3", false, "錄音成功但播放失敗 " + errName(e) + "（" + info + "）"));
+    };
+    rec.start();
+    setResult("r3", null, "錄音中，請說話…");
+    setTimeout(() => { if (rec.state === "recording") rec.stop() }, 3000);
+  } catch (e) {
+    stream.getTracks().forEach(t => t.stop());
+    btn.disabled = false;
+    setResult("r3", false, "MediaRecorder " + errName(e));
+  }
+};
+
+/* ---------- 4 語音辨識 ---------- */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+function testRecognize(id, lang) {
+  if (!SR) { setResult(id, false, "不支援 SpeechRecognition"); return }
+  try { speechSynthesis.cancel() } catch (e) {}
+  let r, text = "", failed = false;
+  try { r = new SR() } catch (e) { setResult(id, false, errName(e)); return }
+  r.lang = lang; r.interimResults = true; r.continuous = false;
+  r.onresult = e => { let s = ""; for (const res of e.results) s += res[0].transcript; text = s; setResult(id, null, "聽到：" + s) };
+  r.onerror = e => { failed = true; setResult(id, false, errName(e)) };
+  r.onend = () => { if (failed) return; text.trim() ? setResult(id, true, "辨識結果「" + text.trim() + "」") : setResult(id, false, "沒有辨識到任何文字") };
+  try { r.start(); setResult(id, null, "聆聽中，請說話…") }
+  catch (e) { setResult(id, false, "無法啟動 " + errName(e)) }
+}
+$("#b4z").onclick = () => testRecognize("r4z", "zh-TW");
+$("#b4i").onclick = () => testRecognize("r4i", "id-ID");
+
+/* ---------- 5 翻譯 ---------- */
+const apiInput = $("#api");
+if (IN_GAS) {
+  // B：直接用 google.script.run，不需要填網址
+  $("#apiBox").innerHTML = "<p>這是 Apps Script 頁面，直接用 google.script.run 呼叫後端。</p>";
+} else {
+  try { apiInput.value = new URLSearchParams(location.search).get("api") || localStorage.getItem("cuenei-test-api") || "" } catch (e) {}
+}
+/* 呼叫後端：A 用 fetch（text/plain 避免預檢），B 用 google.script.run */
+function callApi(req) {
+  if (IN_GAS) {
+    return new Promise((res, rej) => google.script.run.withSuccessHandler(res).withFailureHandler(rej).api(req));
+  }
+  const url = apiInput.value.trim();
+  return fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify(req),
+    redirect: "follow"
+  }).then(r => { if (!r.ok) throw { name: "HTTP " + r.status }; return r.json() });
+}
+$("#b5").onclick = async () => {
+  if (!IN_GAS) {
+    const url = apiInput.value.trim();
+    if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(url)) { setResult("r5", false, "請先貼上結尾為 /exec 的後端網址"); return }
+    try { localStorage.setItem("cuenei-test-api", url) } catch (e) {}
+  }
+  const cases = [
+    ["阿嬤今天吃很少，下午有量血壓", "zh-TW", "id"],
+    ["Nenek sudah minum obat dan sekarang tidur", "id", "zh-TW"],
+    ["請幫阿嬤翻身，檢查皮膚有沒有紅腫", "zh-TW", "id"]
+  ];
+  const lines = [], times = [];
+  $("#b5").disabled = true; $("#d5").textContent = "";
+  setResult("r5", null, "翻譯中…");
+  try {
+    for (const [text, from, to] of cases) {
+      const t0 = performance.now();
+      const res = await callApi({ action: "translate", text, from, to });
+      const ms = Math.round(performance.now() - t0);
+      if (!res || !res.ok) throw { name: (res && res.error && res.error.code) || "unknown", message: res && res.error && res.error.message };
+      times.push(ms);
+      lines.push(ms + " ms（後端 " + res.data.server_ms + " ms）\n  " + text + "\n  → " + res.data.text);
+      $("#d5").textContent = lines.join("\n");
+    }
+    const max = Math.max(...times);
+    setResult("r5", true, "往返 " + times.join("、") + " ms" + (max > 3000 ? "（超過 3 秒，需加快取）" : ""));
+    RESULTS.r5d = lines.join("\n");
+  } catch (e) {
+    setResult("r5", false, errName(e) + (e && e.message ? "（" + e.message + "）" : "") + (IN_GAS ? "" : "；若為 TypeError，多半是跨網域或網址、部署權限問題"));
+  }
+  $("#b5").disabled = false;
+};
+
+/* ---------- 6 IndexedDB ---------- */
+/* 沒有錄音時，產生 0.3 秒的 440Hz WAV 當測試資料 */
+function toneBlob() {
+  const rate = 8000, n = rate * .3, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)) };
+  str(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); str(8, "WAVEfmt "); v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true); str(36, "data"); v.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) v.setInt16(44 + i * 2, Math.sin(2 * Math.PI * 440 * i / rate) * 12000, true);
+  return new Blob([buf], { type: "audio/wav" });
+}
+function openDb() {
+  return new Promise((res, rej) => {
+    let r;
+    try { r = indexedDB.open("cuenei-test", 1) } catch (e) { rej(e); return }
+    r.onupgradeneeded = () => r.result.createObjectStore("rec");
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+$("#b6").onclick = async () => {
+  if (!("indexedDB" in window)) { setResult("r6", false, "不支援 IndexedDB"); return }
+  const src = lastBlob || toneBlob(), from = lastBlob ? "第 3 項錄音" : "測試音";
+  try {
+    const db = await openDb();
+    await new Promise((res, rej) => { const t = db.transaction("rec", "readwrite"); t.objectStore("rec").put(src, "t1"); t.oncomplete = res; t.onerror = () => rej(t.error); t.onabort = () => rej(t.error) });
+    const back = await new Promise((res, rej) => { const q = db.transaction("rec").objectStore("rec").get("t1"); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error) });
+    db.close();
+    if (!(back instanceof Blob)) { setResult("r6", false, "讀回的不是 Blob"); return }
+    if (back.size !== src.size) { setResult("r6", false, "大小不符，寫入 " + src.size + "、讀回 " + back.size); return }
+    const info = from + "，" + back.type + "，" + back.size + " 位元組";
+    new Audio(URL.createObjectURL(back)).play()
+      .then(() => setResult("r6", true, "寫入、讀回、播放皆正常（" + info + "）"))
+      .catch(e => setResult("r6", false, "讀回正常但播放失敗 " + errName(e) + "（" + info + "）"));
+  } catch (e) { setResult("r6", false, errName(e)) }
+};
+
+/* ---------- 彙整 ---------- */
+$("#bSum").onclick = () => {
+  const out = ["【厝內溝通板 階段 0 測試結果】", envText(), ""];
+  Object.keys(LABELS).forEach(k => out.push(LABELS[k] + "：" + (RESULTS[k] || "未測試")));
+  if (RESULTS.r5d) out.push("", "翻譯明細：", RESULTS.r5d);
+  out.push("", $("#voices").textContent);
+  $("#sum").value = out.join("\n");
+};
+$("#bCopy").onclick = async () => {
+  const ta = $("#sum");
+  if (!ta.value) $("#bSum").click();
+  try { await navigator.clipboard.writeText(ta.value); $("#bCopy").textContent = "已複製" }
+  catch (e) { ta.focus(); ta.select(); $("#bCopy").textContent = "請長按文字手動複製" }
+};
+</script>
+</body>
+</html>
