@@ -16,7 +16,7 @@
 }
 *,*::before,*::after{box-sizing:inherit}
 html{scroll-padding-top:env(safe-area-inset-top,0px);height:100%}
-body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--zh);font-size:17px;line-height:1.5;min-height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--zh);font-size:1.0625rem;line-height:1.5;min-height:100%}
 button,input,select,textarea{font:inherit;color:inherit}
 button{cursor:pointer}
 [hidden]{display:none!important}

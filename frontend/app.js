@@ -1174,8 +1174,8 @@ function renderSettings(m) {
 
   // ---- 使用說明 ----
   m.appendChild(h("div", "panel", `<h3>${t("使用說明", "Cara pakai")}</h3><p style="margin:0">${t(
-    "「阿嬤」：長輩點卡片，播印尼語給看護聽。「家人」：交辦事情，播印尼語。「看護」：介面以印尼文為主，「對長輩說」播家人錄的台語，「回報家人」播華語。上方會依時間表顯示現在這個時段常用的句子。紅色「緊急」按鈕隨時可用，會顯示處理步驟。",
-    "Ketuk kartu untuk memutar suara. “Bicara ke Nenek / Kakek” diputar dalam bahasa Taiwan (rekaman keluarga). “Lapor ke Keluarga” diputar dalam bahasa Mandarin. Di bagian atas ada kartu yang sering dipakai pada jam ini. Tombol merah “Darurat” selalu bisa dipakai dan menampilkan langkah-langkahnya.")}</p>`));
+    "「阿嬤」：長輩點卡片，播印尼語給看護聽。「家人」：交辦事情，播印尼語。「對話」：按住 🎙 說話，放開就翻譯給對方聽。「錄音」：用台語錄下「對長輩說」的句子，看護點卡片時會播您的聲音。「新增圖卡」：加上常用但沒有的句子。上方會依時間表顯示現在這個時段常用的句子。紅色「緊急」按鈕隨時可用，會顯示處理步驟。沒有網路時，圖卡、發音、台語錄音和緊急步驟仍可使用。",
+    "Ketuk kartu untuk memutar suara. “Bicara ke Nenek / Kakek” diputar dalam bahasa Taiwan (rekaman keluarga). “Lapor ke Keluarga” diputar dalam bahasa Mandarin. “Percakapan”: tahan tombol 🎙 sambil bicara, lepas untuk menerjemahkan. “Perbaikan”: periksa kalimat bahasa Indonesia di setiap kartu. Di bagian atas ada kartu yang sering dipakai pada jam ini. Tombol merah “Darurat” selalu bisa dipakai dan menampilkan langkah-langkahnya. Tanpa internet, kartu dan suara tetap bisa dipakai.")}</p>`));
 }
 
 /* ---------- 啟動 ---------- */
