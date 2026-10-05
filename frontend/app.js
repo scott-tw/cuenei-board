@@ -1,9 +1,9 @@
-/* 厝內溝通板：前端主程式（階段 3：加上台語錄音同步、IndexedDB 快取、離線） */
+/* 厝內溝通板：前端主程式 */
 "use strict";
 
 /* ---------- 設定與本機儲存 ---------- */
 const API_URL = (window.CUENEI_CONFIG && window.CUENEI_CONFIG.API_URL) || "";
-const K = { token: "cb-token", role: "cb-role", dev: "cb-device-id", label: "cb-device-label", data: "cb-data", tab: "cb-tab", tablet: "cb-tablet" };
+const K = { token: "cb-token", role: "cb-role", dev: "cb-device-id", label: "cb-device-label", data: "cb-data", tab: "cb-tab", tablet: "cb-tablet", flip: "cb-flip", ok: "cb-checked", sent: "cb-suggested" };
 /* 客廳平板模式是「這台裝置」的設定，不是角色 */
 const tabletMode = () => LS.get(K.tablet, false);
 const LS = {
@@ -91,10 +91,18 @@ const TAB_DEFS = {
   elder:  { zh: "阿嬤", id: "Nenek", cats: ["elder"] },
   family: { zh: "家人", id: "Keluarga", cats: ["care", "food", "home", "daily"] },
   carer:  { zh: "看護", id: "Perawat", cats: ["toElder", "report"] },
+  talk:   { zh: "對話", id: "Percakapan", cats: [] },
   rec:    { zh: "錄音", id: "Rekaman", cats: [] },
+  add:    { zh: "新增圖卡", id: "Kartu baru", cats: [] },
+  sug:    { zh: "建議修正", id: "Perbaikan", cats: [] },
+  admin:  { zh: "管理", id: "Kelola", cats: [] },
   set:    { zh: "設定", id: "Pengaturan", cats: [] }
 };
-const ROLE_TABS = { family: ["elder", "family", "rec", "set"], carer: ["carer", "set"], admin: ["elder", "family", "carer", "rec", "set"] };
+const ROLE_TABS = {
+  family: ["elder", "family", "talk", "rec", "add", "set"],
+  carer: ["carer", "talk", "sug", "set"],
+  admin: ["elder", "family", "carer", "talk", "rec", "add", "admin", "set"]
+};
 const canRecord = () => state.role === "family" || state.role === "admin";
 const ROLE_NAMES = { admin: ["管理者", "Admin"], family: ["家人", "Keluarga"], carer: ["看護", "Perawat"] };
 
@@ -163,7 +171,7 @@ function authLost() {
 function clearSession() {
   state.token = ""; state.role = ""; state.data = null; state.tab = ""; state.cat = "all";
   [K.token, K.role, K.data, K.tab].forEach(LS.del);
-  AUDIO.clear();
+  AUDIO.clear(); allCards = null; pending = null;
   dbClear("kv").catch(() => {}); dbClear("audio").catch(() => {});
 }
 
@@ -312,7 +320,7 @@ function renderTabs() {
     const d = TAB_DEFS[k], b = h("button");
     b.setAttribute("role", "tab"); b.setAttribute("aria-selected", state.tab === k);
     b.innerHTML = state.role === "carer" ? `<span class="idn">${d.id}</span><small style="font-family:var(--zh)">${d.zh}</small>` : `${d.zh}<small>${d.id}</small>`;
-    b.onclick = () => { stopAll(); state.tab = k; state.cat = "all"; LS.set(K.tab, k); render(); window.scrollTo(0, 0) };
+    b.onclick = () => { stopAll(); if (activeSR) { try { activeSR.abort() } catch (_) {} } state.tab = k; state.cat = "all"; LS.set(K.tab, k); render(); window.scrollTo(0, 0) };
     n.appendChild(b);
   });
 }
@@ -361,8 +369,8 @@ function render() {
   if (!tabs.includes(state.tab)) state.tab = (tabletMode() && tabs.includes("elder")) ? "elder" : tabs.includes("family") ? "family" : tabs[0];
   renderTabs();
   const m = $("#main"); m.innerHTML = "";
-  if (state.tab === "set") { renderSettings(m); return }
-  if (state.tab === "rec") { renderRecordings(m); return }
+  const special = { set: renderSettings, rec: renderRecordings, talk: renderTalk, add: renderAdd, sug: renderSuggest, admin: renderAdmin }[state.tab];
+  if (special) { special(m); return }
   if (!TTS_OK) {
     const b = h("div", "panel", `<h3 style="color:var(--emg)">${t("這個瀏覽器無法發音", "Browser ini tidak bisa bersuara")}</h3><p style="margin:0">${t("圖卡仍可看文字。要有聲音，請改用 Chrome 開啟。", "Kartu tetap bisa dibaca. Agar ada suara, buka dengan Chrome.")}</p>`);
     m.appendChild(b);
@@ -606,6 +614,330 @@ function openRecorder(c) {
   }
 
   draw();
+  $("#ov").classList.add("open");
+  sh.scrollTop = 0;
+}
+
+/* ---------- 即時對話 ---------- */
+/* 對話內容只留在畫面上，不存檔、不上傳紀錄（後端只記一次「translate」次數） */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let activeSR = null;
+
+function renderTalk(m) {
+  const mine = state.role === "carer" ? "id" : "zh", other = mine === "id" ? "zh" : "id";
+  const flip = LS.get(K.flip, true);
+  const tools = h("div", "talk-tools");
+  const hint = h("span", "hint", SR
+    ? t("按住 🎙 說話，放開就會翻譯。上半部給對面的人看。長輩說台語時請改用圖卡。", "Tahan tombol 🎙 sambil bicara, lepas untuk menerjemahkan. Bagian atas untuk orang di depan Anda.")
+    : "這個瀏覽器不支援語音辨識：請點文字框，按鍵盤上的 🎤 語音輸入，說完按「送出」。<span class='idn'> Browser ini tidak mendukung pengenalan suara: ketuk kotak teks, tekan 🎤 di keyboard, lalu tekan “Kirim”.</span>");
+  const fb = h("button", "sm"); fb.textContent = flip ? t("上半部：已轉向對面", "Atas: menghadap lawan bicara") : t("上半部：未轉向", "Atas: tidak diputar");
+  fb.onclick = () => { LS.set(K.flip, !flip); render() };
+  tools.append(hint, fb);
+  m.appendChild(tools);
+  const wrap = h("div", "talk");
+  const top = talkHalf(other, flip), bot = talkHalf(mine, false);
+  top.other = bot; bot.other = top;
+  wrap.append(top.el, bot.el);
+  m.appendChild(wrap);
+}
+
+function talkHalf(lang, flip) {
+  const isId = lang === "id";
+  const el = h("section", "half " + lang + (flip ? " flip" : ""));
+  el.style.setProperty("--c", isId ? "#1f7d80" : "#2c67a8");
+  el.innerHTML = `<div class="lab"><span>${isId ? "Bahasa Indonesia（看護）" : "華語（家人）"}</span></div>
+    <div class="out" aria-live="polite"><span class="ph${isId ? " idn" : ""}">${isId ? (SR ? "Tahan 🎙 lalu bicara, atau ketik." : "Ketik di sini, lalu tekan Kirim.") : (SR ? "按住 🎙 說話，或直接打字。" : "在下面打字，再按送出。")}</span></div>
+    <div class="trow"><button class="mic hold" type="button">${isId ? "🎙 Tahan" : "🎙 按住說話"}</button><input type="text" ${isId ? 'class="idn" lang="id"' : 'lang="zh-Hant"'} placeholder="${isId ? "Ketik di sini…" : "在這裡打字…"}" enterkeyhint="send" autocomplete="off"><button class="mic send" type="button">${isId ? "Kirim" : "送出"}</button></div>`;
+  const obj = { el, lang, out: el.querySelector(".out") };
+  const inp = el.querySelector("input"), mic = el.querySelector(".hold"), send = el.querySelector(".send");
+
+  const go = async text => {
+    text = String(text).trim(); if (!text) return;
+    inp.value = "";
+    const o = obj.other;
+    obj.out.innerHTML = `<span class="said">${esc(text)}</span>`;
+    o.out.innerHTML = `<span class="ph">${o.lang === "id" ? "Menerjemahkan…" : "翻譯中…"}</span>`;
+    try {
+      const r = await api("translate", { text, from: isId ? "id" : "zh-TW", to: isId ? "zh-TW" : "id" });
+      o.out.innerHTML = `${esc(r.text)}<span class="orig">${esc(text)}</span>`;
+      speak(r.text, o.lang === "id" ? "id-ID" : "zh-TW");
+      api("log", { action_name: "translate", card_id: "" }).catch(() => {});
+    } catch (e) {
+      if (!state.token) return;
+      const p = errPair(e);
+      o.out.innerHTML = `<span class="ph" style="color:var(--emg)">${esc(p[0])} · <span class="idn">${esc(p[1])}</span></span>`;
+    }
+  };
+  send.onclick = () => go(inp.value);
+  inp.addEventListener("keydown", e => { if (e.key === "Enter") go(inp.value) });
+
+  if (!SR) { mic.hidden = true; return obj }
+  // 按住說話、放開送出
+  const idle = mic.textContent, active = isId ? "🎙 Lepas untuk kirim" : "🎙 放開送出";
+  let rec = null, text = "";
+  const start = e => {
+    e.preventDefault();
+    if (rec) return;
+    stopAll();
+    if (activeSR) { try { activeSR.abort() } catch (_) {} }
+    let r;
+    try { r = new SR() } catch (_) { toast(t("無法啟動語音辨識，請改用打字", "Pengenalan suara gagal, silakan ketik")); return }
+    rec = activeSR = r; text = "";
+    r.lang = isId ? "id-ID" : "zh-TW"; r.interimResults = true;
+    r.continuous = !/Android/i.test(navigator.userAgent);   // Android 的連續模式會重複輸出文字
+    r.onresult = ev => { let s = ""; for (const res of ev.results) s += res[0].transcript; text = s; inp.value = s };
+    r.onerror = ev => {
+      if (ev.error === "aborted") return;
+      toast(ev.error === "not-allowed" || ev.error === "service-not-allowed"
+        ? t("沒有麥克風權限，請改用打字", "Tidak ada izin mikrofon, silakan ketik")
+        : t("聽不清楚，請再說一次", "Tidak terdengar jelas, coba lagi"));
+    };
+    r.onend = () => {
+      mic.classList.remove("on"); mic.textContent = idle;
+      if (activeSR === r) activeSR = null;
+      rec = null;
+      if (text.trim()) go(text);
+    };
+    try { r.start(); mic.classList.add("on"); mic.textContent = active; if (e.pointerId !== undefined) mic.setPointerCapture(e.pointerId) }
+    catch (_) { rec = null; activeSR = null; toast(t("無法啟動語音辨識，請改用打字", "Pengenalan suara gagal, silakan ketik")) }
+  };
+  const end = () => { if (rec) { try { rec.stop() } catch (_) {} } };
+  mic.addEventListener("pointerdown", start);
+  mic.addEventListener("pointerup", end);
+  mic.addEventListener("pointercancel", end);
+  mic.addEventListener("contextmenu", e => e.preventDefault());
+  mic.addEventListener("keydown", e => { if ((e.key === " " || e.key === "Enter") && !e.repeat) start(e) });
+  mic.addEventListener("keyup", e => { if (e.key === " " || e.key === "Enter") end() });
+  return obj;
+}
+
+/* ---------- 新增圖卡（家人、管理者） ---------- */
+const ADD_CATS = [["care", "家人：照護"], ["food", "家人：飲食"], ["home", "家人：家務"], ["daily", "家人：日常"], ["toElder", "看護：對長輩說（台語）"], ["report", "看護：回報家人"], ["elder", "阿嬤專區"]];
+
+/* 把後端回傳的卡片放進本機資料 */
+async function applyCard(card, version) {
+  const i = state.data.cards.findIndex(c => c.id === card.id);
+  if (i >= 0) state.data.cards[i] = card; else if (hasCat(card.cat)) state.data.cards.push(card);
+  state.data.cards.sort((a, b) => a.sort - b.sort);
+  if (version) state.data.data_version = version;
+  await saveData(state.data);
+}
+
+function renderAdd(m) {
+  const admin = state.role === "admin";
+  const p = h("div", "panel", `<h3>新增圖卡</h3><p>生活中遇到常用但沒有的句子，可以自己加。${admin ? "管理者新增的圖卡會直接生效。" : "送出後要等管理者審核，審核前只有家人看得到。"}印尼文可以按「自動翻譯」，重要句子建議請看護確認看得懂。</p>
+    <div class="form">
+      <div class="two"><label>圖示<input id="nE" value="💬" maxlength="8"></label><label>放在哪一組<select id="nC">${ADD_CATS.map(c => `<option value="${c[0]}">${c[1]}</option>`).join("")}</select></label></div>
+      <label>中文<input id="nZ" maxlength="200" placeholder="例如：幫阿公倒茶"></label>
+      <label>印尼文<input id="nI" class="idn" lang="id" maxlength="300" placeholder="Bahasa Indonesia"></label>
+      <label class="chk"><input type="checkbox" id="nQ"> 這是「要不要／是不是」的問句</label>
+      <div class="btns" style="margin-top:4px"><button class="btn" id="nT">自動翻譯</button><button class="btn solid" id="nS">新增圖卡</button></div>
+    </div>`);
+  m.appendChild(p);
+  const q = id => p.querySelector(id);
+  q("#nT").onclick = async e => {
+    const z = q("#nZ").value.trim(); if (!z) { toast("請先輸入中文"); return }
+    const b = e.currentTarget; b.disabled = true; b.textContent = "翻譯中…";
+    try { q("#nI").value = (await api("translate", { text: z, from: "zh-TW", to: "id" })).text } catch (err) { if (state.token) toast(errPair(err)[0]) }
+    b.disabled = false; b.textContent = "自動翻譯";
+  };
+  q("#nS").onclick = async e => {
+    const z = q("#nZ").value.trim(), i = q("#nI").value.trim();
+    if (!z || !i) { toast("中文和印尼文都要填"); return }
+    const b = e.currentTarget; b.disabled = true;
+    try {
+      const r = await api("addCard", { cat: q("#nC").value, icon: q("#nE").value.trim() || "💬", zh: z, id_text: i, is_question: q("#nQ").checked });
+      await applyCard(r.card, r.data_version);
+      toast(admin ? "已新增圖卡" : "已送出，等管理者審核");
+      render();
+    } catch (err) { b.disabled = false; if (state.token) toast(errPair(err)[0]) }
+  };
+  const mine = state.data.cards.filter(c => c.status === "pending");
+  if (mine.length) {
+    const p2 = h("div", "panel", `<h3>等待審核的圖卡（${mine.length}）</h3><div class="list"></div>`);
+    mine.forEach(c => p2.querySelector(".list").appendChild(h("div", "rowi", `<span class="em" aria-hidden="true" style="font-size:2rem;display:inline-flex">${iconHTML(c.icon)}</span><div class="t">${esc(c.zh)}<small class="idn">${esc(c.id_text)}</small></div><span class="s">${esc(catOf(c.cat).zh)}</span>`)));
+    m.appendChild(p2);
+  }
+}
+
+/* ---------- 建議修正印尼文（看護） ---------- */
+let allCards = null;   // 全部圖卡（含看護平常看不到的分類），只放在記憶體
+async function renderSuggest(m) {
+  m.appendChild(h("div", "panel", `<h3 class="idn">Periksa terjemahan <small style="font-family:var(--zh);font-weight:400">確認印尼文</small></h3><p class="idn" style="margin:0">Tolong baca setiap kartu. Jika kalimatnya sudah benar dan mudah dimengerti, tekan “✓ Benar”. Jika aneh atau salah, tekan “✏️ Perbaiki” dan tulis kalimat yang lebih baik. Keluarga akan memeriksanya.</p>`));
+  if (!allCards) {
+    const wait = h("p", "hint idn"); wait.textContent = "Memuat…"; m.appendChild(wait);
+    try { allCards = await api("allCards") }
+    catch (e) { if (state.token) { const p = errPair(e); wait.textContent = p[1] + " · " + p[0] } return }
+    if (state.tab !== "sug") return;
+    wait.remove();
+  }
+  const ok = new Set(LS.get(K.ok, [])), sent = new Set(LS.get(K.sent, []));
+  const head = h("p", "hint idn"); m.appendChild(head);
+  const count = () => { head.textContent = `Sudah diperiksa ${allCards.cards.filter(c => ok.has(c.id) || sent.has(c.id)).length} / ${allCards.cards.length}` };
+  count();
+  allCards.categories.forEach(cat => {
+    const cards = allCards.cards.filter(c => c.cat === cat.key);
+    if (!cards.length) return;
+    const box = h("div", "panel");
+    const hd = tint(h("h3"), cat.color); hd.style.color = "var(--c)"; hd.innerHTML = `<span class="idn">${esc(cat.id_text)}</span> <small style="font-family:var(--zh);font-weight:400;color:var(--muted)">${esc(cat.zh)}</small>`;
+    const list = h("div", "list");
+    cards.forEach(c => {
+      const row = h("div", "rowi wrap", `<span class="em" aria-hidden="true" style="font-size:2rem;display:inline-flex">${iconHTML(c.icon)}</span><div class="t idn" style="font-size:1.1rem;font-weight:700">${esc(c.id_text)}<small style="font-family:var(--zh);font-weight:400">${esc(c.zh)}</small></div>`);
+      const st = h("span", "s"), bOk = h("button", "sm"), bFix = h("button", "sm");
+      const draw = () => {
+        st.textContent = sent.has(c.id) ? "Saran terkirim" : ok.has(c.id) ? "✓ Benar" : "";
+        st.className = "s idn" + (ok.has(c.id) || sent.has(c.id) ? " ok" : "");
+        bOk.className = "sm idn" + (ok.has(c.id) ? " solid" : "");
+      };
+      bOk.textContent = "✓ Benar"; bFix.textContent = "✏️ Perbaiki"; bFix.className = "sm idn";
+      bOk.onclick = () => { ok.has(c.id) ? ok.delete(c.id) : ok.add(c.id); LS.set(K.ok, [...ok]); draw(); count() };
+      bFix.onclick = () => openSuggest(c, () => { sent.add(c.id); LS.set(K.sent, [...sent]); draw(); count() });
+      row.append(st, bOk, bFix);
+      draw();
+      list.appendChild(row);
+    });
+    box.append(hd, list);
+    m.appendChild(box);
+  });
+}
+
+function openSuggest(c, onSent) {
+  const sh = $("#sheet"); sh.classList.remove("tint"); sh.style.setProperty("--c", "var(--accent)");
+  sh.innerHTML = `<div class="big2">${esc(c.zh)}</div><div class="note idn">Sekarang: ${esc(c.id_text)}</div>
+    <label class="form" style="margin-top:14px"><span class="idn" style="font-weight:700">Kalimat yang lebih baik <small style="font-family:var(--zh);font-weight:400">建議的印尼文</small></span><textarea id="sg" class="idn" lang="id" rows="3" maxlength="300"></textarea></label>
+    <div class="btns"><button class="btn solid idn" id="sk">Kirim 送出</button><button class="btn idn" id="sc">Batal 取消</button></div>`;
+  const ta = sh.querySelector("#sg"); ta.value = c.id_text;
+  sh.querySelector("#sc").onclick = closeSheet;
+  sh.querySelector("#sk").onclick = async e => {
+    const v = ta.value.trim();
+    if (!v || v === c.id_text) { toast("Tulis kalimat yang berbeda dulu"); return }
+    const b = e.currentTarget; b.disabled = true;
+    try { await api("suggest", { card_id: c.id, new_text: v }); toast("Terima kasih! Saran sudah dikirim ke keluarga."); closeSheet(); onSent() }
+    catch (err) { b.disabled = false; if (state.token) toast(errPair(err)[1]) }
+  };
+  $("#ov").classList.add("open");
+  sh.scrollTop = 0;
+  ta.focus();
+}
+
+/* ---------- 管理（管理者） ---------- */
+let pending = null, adminCat = "";
+
+function renderAdmin(m) {
+  // ---- 待審核 ----
+  const p1 = h("div", "panel", `<h3>待審核</h3><p>家人新增的圖卡，以及看護建議的印尼文。</p><div id="pd"><p class="hint" style="margin:0">讀取中…</p></div><div class="btns"><button class="btn" id="pr">重新整理</button></div>`);
+  m.appendChild(p1);
+  const pd = p1.querySelector("#pd");
+  const load = async () => {
+    try { pending = await api("listPending") } catch (e) { if (state.token) pd.innerHTML = `<p class="hint" style="margin:0;color:var(--emg)">${esc(errPair(e)[0])}</p>`; return }
+    if (state.tab === "admin") drawPending();
+  };
+  const drawPending = () => {
+    pd.innerHTML = "";
+    if (!pending.cards.length && !pending.suggestions.length) { pd.innerHTML = '<p class="hint" style="margin:0">目前沒有待審核的項目。</p>'; return }
+    const list = h("div", "list"); pd.appendChild(list);
+    pending.cards.forEach(c => {
+      const row = h("div", "rowi wrap", `<span class="em" aria-hidden="true" style="font-size:2rem;display:inline-flex">${iconHTML(c.icon)}</span><div class="t"><b>新圖卡</b>（${esc(catOf(c.cat).zh)}）<br>${esc(c.zh)}<small class="idn">${esc(c.id_text)}</small></div>`);
+      const act = async (b, changes, msg) => {
+        b.disabled = true;
+        try { const r = await api("updateCard", Object.assign({ id: c.id }, changes)); await applyCard(r.card, r.data_version); toast(msg); pending.cards = pending.cards.filter(x => x.id !== c.id); drawPending() }
+        catch (e) { b.disabled = false; if (state.token) toast(errPair(e)[0]) }
+      };
+      const ok = h("button", "sm solid"); ok.textContent = "通過"; ok.onclick = () => act(ok, { status: "active" }, "已通過，圖卡生效");
+      const ed = h("button", "sm"); ed.textContent = "編輯"; ed.onclick = () => openEditor(c, load);
+      const no = h("button", "sm"); no.textContent = "不採用"; no.onclick = () => act(no, { status: "hidden" }, "已設為隱藏");
+      row.append(ok, ed, no);
+      list.appendChild(row);
+    });
+    pending.suggestions.forEach(sg => {
+      const card = cardById(sg.card_id);
+      const row = h("div", "rowi wrap", `<div class="t"><b>印尼文建議</b>（${esc((ROLE_NAMES[sg.by_role] || [sg.by_role])[0])}）<br>${esc(card ? card.zh : sg.card_id)}<small class="idn">原本：${esc(sg.old_text)}</small><span class="idn" style="display:block;font-weight:700">建議：${esc(sg.new_text)}</span></div>`);
+      const act = async (b, accept) => {
+        b.disabled = true;
+        try {
+          const r = await api("reviewSuggestion", { row: sg.row, accept });
+          if (accept && card) { card.id_text = sg.new_text; state.data.data_version = r.data_version; await saveData(state.data) }
+          toast(accept ? "已接受，圖卡印尼文已更新" : "已拒絕");
+          pending.suggestions = pending.suggestions.filter(x => x.row !== sg.row); drawPending();
+        } catch (e) { b.disabled = false; if (state.token) toast(errPair(e)[0]) }
+      };
+      const ok = h("button", "sm solid"); ok.textContent = "接受"; ok.onclick = () => act(ok, true);
+      const no = h("button", "sm"); no.textContent = "拒絕"; no.onclick = () => act(no, false);
+      row.append(ok, no);
+      list.appendChild(row);
+    });
+  };
+  p1.querySelector("#pr").onclick = load;
+  if (pending) drawPending();
+  load();
+
+  // ---- 圖卡管理 ----
+  const cats = state.data.categories;
+  if (!cats.some(c => c.key === adminCat)) adminCat = cats.length ? cats[0].key : "";
+  const p2 = h("div", "panel", `<h3>圖卡管理</h3><p>修改文字、圖示、排序，或把不用的圖卡隱藏。也可以直接在試算表的 Cards 分頁修改。</p>
+    <div class="form"><label>分類<select id="ac">${cats.map(c => `<option value="${esc(c.key)}"${c.key === adminCat ? " selected" : ""}>${esc(c.zh)}</option>`).join("")}</select></label></div><div class="list" id="al" style="margin-top:8px"></div>`);
+  m.appendChild(p2);
+  p2.querySelector("#ac").onchange = e => { adminCat = e.target.value; render() };
+  state.data.cards.filter(c => c.cat === adminCat).forEach(c => {
+    const tag = c.status === "hidden" ? "隱藏" : c.status === "pending" ? "待審核" : "";
+    const row = h("div", "rowi", `<span class="em" aria-hidden="true" style="font-size:2rem;display:inline-flex">${iconHTML(c.icon)}</span><div class="t"${c.status === "hidden" ? ' style="opacity:.55"' : ""}>${esc(c.zh)}<small class="idn">${esc(c.id_text)}</small></div><span class="s${tag ? " bad" : ""}">${tag}</span>`);
+    const ed = h("button", "sm"); ed.textContent = "編輯"; ed.onclick = () => openEditor(c, render);
+    row.appendChild(ed);
+    p2.querySelector("#al").appendChild(row);
+  });
+
+  // ---- PIN ----
+  const p3 = h("div", "panel", `<h3>更改 PIN</h3><p>更改後，該角色的所有裝置都要用新 PIN 重新登入。更換看護時，請更改看護的 PIN。三組 PIN 不可相同。</p>
+    <div class="form"><label>角色<select id="pRole"><option value="carer">看護</option><option value="family">家人（含客廳平板）</option><option value="admin">管理者</option></select></label>
+    <label>新的 PIN（6 位數字）<input id="pNew" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off"></label>
+    <div class="btns" style="margin-top:4px"><button class="btn solid" id="pSet">更改 PIN</button></div></div>`);
+  m.appendChild(p3);
+  p3.querySelector("#pSet").onclick = async e => {
+    const role = p3.querySelector("#pRole").value, pin = p3.querySelector("#pNew").value.trim();
+    if (!/^\d{6}$/.test(pin)) { toast("PIN 需為 6 位數字"); return }
+    const name = ROLE_NAMES[role][0];
+    if (!confirm(`確定要更改「${name}」的 PIN 嗎？${role === "admin" ? "這台裝置也會被登出，要用新 PIN 重新登入。" : "該角色的裝置都要重新登入。"}`)) return;
+    const b = e.currentTarget; b.disabled = true;
+    try {
+      const r = await api("setPin", { role, pin });
+      p3.querySelector("#pNew").value = "";
+      if (role === "admin") { clearSession(); toast("管理者 PIN 已更改，請用新 PIN 登入"); showLogin(); return }
+      toast(`已更改「${name}」的 PIN，${r.revoked} 台裝置需重新登入`);
+    } catch (err) { if (state.token) toast(err && err.code === "bad_input" && err.message ? err.message : errPair(err)[0]) }
+    b.disabled = false;
+  };
+
+  m.appendChild(h("div", "panel", `<h3>使用紀錄</h3><p style="margin:0">每次點圖卡、翻譯、緊急的時間與裝置，記在試算表的 Log 分頁（不記對話內容）。不想記錄時，在 Apps Script 的指令碼屬性新增 <b>LOG_ENABLED</b>，值填 <b>false</b>。</p>`));
+}
+
+/* 圖卡編輯浮層（管理者） */
+function openEditor(c, onDone) {
+  const cats = state.data.categories;
+  const sh = tint($("#sheet"), catOf(c.cat).color);
+  const opt = (v, label, cur) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(label)}</option>`;
+  sh.innerHTML = `<h3 style="margin:0 0 10px">編輯圖卡</h3><div class="form">
+    <div class="two"><label>圖示<input id="eE" maxlength="24"></label><label>分類<select id="eC">${cats.map(x => opt(x.key, x.zh, c.cat)).join("")}</select></label></div>
+    <label>中文<input id="eZ" maxlength="200"></label>
+    <label>印尼文<input id="eI" class="idn" lang="id" maxlength="300"></label>
+    <div class="two" style="grid-template-columns:1fr 1fr"><label>點開時播放<select id="eP">${[["", "依分類預設"], ["id", "印尼語"], ["tw", "台語錄音"], ["zh", "華語"], ["auto", "依角色"]].map(x => opt(x[0], x[1], c.play)).join("")}</select></label>
+    <label>狀態<select id="eS">${[["active", "使用中"], ["pending", "待審核"], ["hidden", "隱藏"]].map(x => opt(x[0], x[1], c.status)).join("")}</select></label></div>
+    <div class="two" style="grid-template-columns:1fr 1fr"><label>排序（小的在前）<input id="eO" type="number" inputmode="numeric"></label><label class="chk" style="align-self:end;min-height:48px"><input type="checkbox" id="eQ"> 這是問句</label></div>
+    <div class="btns" style="margin-top:4px"><button class="btn solid" id="eOk">儲存</button><button class="btn" id="eNo">取消</button></div></div>`;
+  const q = id => sh.querySelector(id);
+  q("#eE").value = c.icon; q("#eZ").value = c.zh; q("#eI").value = c.id_text; q("#eO").value = c.sort; q("#eQ").checked = c.is_question;
+  q("#eNo").onclick = closeSheet;
+  q("#eOk").onclick = async e => {
+    const zh = q("#eZ").value.trim(), idt = q("#eI").value.trim();
+    if (!zh || !idt) { toast("中文和印尼文都要填"); return }
+    const b = e.currentTarget; b.disabled = true;
+    try {
+      const r = await api("updateCard", { id: c.id, icon: q("#eE").value.trim() || "💬", cat: q("#eC").value, zh, id_text: idt, play: q("#eP").value, status: q("#eS").value, sort: Number(q("#eO").value) || 0, is_question: q("#eQ").checked });
+      await applyCard(r.card, r.data_version);
+      toast("已儲存");
+      closeSheet();
+      if (onDone) onDone();
+    } catch (err) { b.disabled = false; if (state.token) toast(errPair(err)[0]) }
+  };
   $("#ov").classList.add("open");
   sh.scrollTop = 0;
 }

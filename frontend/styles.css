@@ -141,6 +141,38 @@ h2.sec small{font-family:var(--id);font-weight:400;color:var(--muted)}
 .sm.solid{background:var(--ink);border-color:var(--ink);color:var(--bg)}
 .btn.solid-danger{background:var(--emg);color:var(--on-c)}
 
+.rowi.wrap{flex-wrap:wrap}
+.rowi.wrap .t{flex:1 1 220px}
+
+/* ---------- 對話 ---------- */
+.talk-tools{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+.talk{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:1fr 1fr;gap:10px;height:calc(100vh - 230px);min-height:480px}
+@supports (height:100dvh){.talk{height:calc(100dvh - 230px)}}
+.half{background:var(--surface);border:1px solid var(--line);border-top:6px solid var(--c);border-radius:18px;padding:12px;display:flex;flex-direction:column;gap:8px;min-height:0}
+.half{min-width:0}
+.half.flip{transform:rotate(180deg)}
+.half .lab{font-weight:800;color:var(--muted);font-size:.9rem}
+.half .out{flex:1;overflow:auto;font-size:1.7rem;font-weight:700;line-height:1.35}
+.half.id .out{font-family:var(--id)}
+.half .out .orig{display:block;font-size:.95rem;font-weight:400;color:var(--muted);margin-top:8px}
+.half .out .ph{color:var(--muted);font-weight:400;font-size:1.05rem}
+.half .out .said{font-size:1.1rem;font-weight:400}
+.trow{display:flex;gap:8px}
+.trow input{flex:1;min-width:0;min-height:52px;border:2px solid var(--line);background:var(--bg);border-radius:12px;padding:10px 12px}
+.mic{min-height:52px;border:0;background:var(--ink);color:var(--bg);border-radius:12px;padding:10px 14px;font-weight:800;white-space:nowrap}
+.mic.hold{touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+.mic.on{background:var(--emg);color:var(--on-c)}
+/* 手機上把「按住說話」放大成一整列，比較好按 */
+@media (max-width:520px){.trow{flex-wrap:wrap}.mic.hold{flex:1 1 100%;min-height:60px;font-size:1.1rem}.talk{height:auto;grid-template-rows:minmax(250px,auto) minmax(250px,auto)}}
+
+/* ---------- 表單 ---------- */
+.form{display:grid;gap:10px}
+.form label{display:grid;gap:4px;font-weight:600}
+.form input:not([type=checkbox]),.form select,.form textarea{min-height:48px;border:2px solid var(--line);background:var(--bg);border-radius:10px;padding:9px 12px;font-weight:400;width:100%}
+.form .two{display:grid;grid-template-columns:90px 1fr;gap:10px}
+.form label.chk{display:flex;align-items:center;gap:8px;font-weight:400}
+.form label.chk input{width:22px;height:22px}
+
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:12px;z-index:80;opacity:0;pointer-events:none;transition:opacity .2s;max-width:90vw;text-align:center}
 .toast.show{opacity:1}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}.card:active{transform:none}}
