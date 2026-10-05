@@ -1,4 +1,4 @@
-/* 厝內溝通板：前端主程式（階段 2：登入、圖卡、時段提示、緊急、發音） */
+/* 厝內溝通板：前端主程式（階段 3：加上台語錄音同步、IndexedDB 快取、離線） */
 "use strict";
 
 /* ---------- 設定與本機儲存 ---------- */
@@ -20,19 +20,87 @@ function deviceId() {
   return id;
 }
 
+/* ---------- IndexedDB：圖卡資料（kv）與台語錄音（audio） ---------- */
+let dbp = null;
+function idb() {
+  if (!dbp) dbp = new Promise((res, rej) => {
+    let r;
+    try { r = indexedDB.open("cuenei", 1) } catch (e) { rej(e); return }
+    r.onupgradeneeded = () => { r.result.createObjectStore("kv"); r.result.createObjectStore("audio") };
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+  return dbp;
+}
+async function dbTx(store, mode, fn) {
+  const db = await idb();
+  return new Promise((res, rej) => {
+    const tx = db.transaction(store, mode), out = fn(tx.objectStore(store));
+    tx.oncomplete = () => res(out && out.result);
+    tx.onerror = tx.onabort = () => rej(tx.error);
+  });
+}
+const dbGet = (store, key) => dbTx(store, "readonly", os => os.get(key));
+const dbPut = (store, key, val) => dbTx(store, "readwrite", os => os.put(val, key));
+const dbDel = (store, key) => dbTx(store, "readwrite", os => os.delete(key));
+const dbClear = store => dbTx(store, "readwrite", os => os.clear());
+
+/* 圖卡資料：存 IndexedDB；不能用時退回 localStorage */
+async function saveData(d) {
+  state.data = d;
+  try { await dbPut("kv", "data", d); LS.del(K.data) } catch (e) { LS.set(K.data, d) }
+}
+async function loadData() {
+  try { const d = await dbGet("kv", "data"); if (d) return d } catch (e) {}
+  return LS.get(K.data, null);   // 舊版存在 localStorage，或 IndexedDB 不能用
+}
+
+/* 台語錄音：啟動時全部讀進記憶體，點卡片時不用再等磁碟或網路 */
+const AUDIO = new Map();   // card_id → { blob, updated }
+async function loadAudio() {
+  try {
+    const db = await idb();
+    await new Promise((res, rej) => {
+      const cur = db.transaction("audio").objectStore("audio").openCursor();
+      cur.onsuccess = () => { const c = cur.result; if (!c) { res(); return } AUDIO.set(c.key, c.value); c.continue() };
+      cur.onerror = () => rej(cur.error);
+    });
+  } catch (e) {}
+}
+function setAudio(id, blob, updated) {
+  AUDIO.set(id, { blob, updated });
+  return dbPut("audio", id, { blob, updated }).catch(() => {});
+}
+function dropAudio(id) { AUDIO.delete(id); return dbDel("audio", id).catch(() => {}) }
+function b64ToBlob(b64, mime) {
+  const bin = atob(b64), bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: mime || "audio/webm" });
+}
+function blobToB64(blob) {
+  return new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(String(fr.result).split(",")[1] || "");
+    fr.onerror = () => rej(fr.error);
+    fr.readAsDataURL(blob);
+  });
+}
+
 /* 各分頁包含的分類，以及各角色看得到的分頁 */
 const TAB_DEFS = {
   elder:  { zh: "阿嬤", id: "Nenek", cats: ["elder"] },
   family: { zh: "家人", id: "Keluarga", cats: ["care", "food", "home", "daily"] },
   carer:  { zh: "看護", id: "Perawat", cats: ["toElder", "report"] },
+  rec:    { zh: "錄音", id: "Rekaman", cats: [] },
   set:    { zh: "設定", id: "Pengaturan", cats: [] }
 };
-const ROLE_TABS = { family: ["elder", "family", "set"], carer: ["carer", "set"], admin: ["elder", "family", "carer", "set"] };
+const ROLE_TABS = { family: ["elder", "family", "rec", "set"], carer: ["carer", "set"], admin: ["elder", "family", "carer", "rec", "set"] };
+const canRecord = () => state.role === "family" || state.role === "admin";
 const ROLE_NAMES = { admin: ["管理者", "Admin"], family: ["家人", "Keluarga"], carer: ["看護", "Perawat"] };
 
 const state = {
   token: LS.get(K.token, ""), role: LS.get(K.role, ""), label: LS.get(K.label, ""),
-  data: LS.get(K.data, null), tab: LS.get(K.tab, ""), cat: "all"
+  data: null, tab: LS.get(K.tab, ""), cat: "all"
 };
 
 const $ = s => document.querySelector(s);
@@ -93,8 +161,10 @@ function authLost() {
   showLogin();
 }
 function clearSession() {
-  state.token = ""; state.role = ""; state.data = null;
+  state.token = ""; state.role = ""; state.data = null; state.tab = ""; state.cat = "all";
   [K.token, K.role, K.data, K.tab].forEach(LS.del);
+  AUDIO.clear();
+  dbClear("kv").catch(() => {}); dbClear("audio").catch(() => {});
 }
 
 /* ---------- 資料 ---------- */
@@ -103,16 +173,44 @@ const cardById = id => state.data.cards.find(c => c.id === id);
 const cardsOf = key => state.data.cards.filter(c => c.cat === key && c.status !== "hidden");
 const hasCat = key => state.data.categories.some(c => c.key === key);
 
-/* 與後端比對版本，不同才重新下載；回傳資料是否有更新 */
-async function sync(force) {
-  if (!force && state.data) {
-    const v = await api("version");
-    if (v.data_version === state.data.data_version) return false;
+/* 與後端比對版本，不同才重新下載圖卡；再補齊有變動的台語錄音。回傳是否有任何更新 */
+async function sync(force, onProgress) {
+  let changed = false;
+  if (force || !state.data || (await api("version")).data_version !== state.data.data_version) {
+    const d = await api("bootstrap");
+    state.role = d.role; LS.set(K.role, d.role);
+    await saveData(d);
+    changed = true;
   }
-  const d = await api("bootstrap");
-  state.data = d; state.role = d.role;
-  LS.set(K.data, d); LS.set(K.role, d.role);
-  return true;
+  if (await syncAudio(onProgress)) changed = true;
+  return changed;
+}
+
+/* 依 audio_updated 比對，只下載變動的錄音，每次最多 20 筆 */
+const AUDIO_BATCH = 20;
+let audioSyncing = null;
+function syncAudio(onProgress) {
+  if (!audioSyncing) audioSyncing = doSyncAudio(onProgress).finally(() => { audioSyncing = null });
+  return audioSyncing;
+}
+async function doSyncAudio(onProgress) {
+  let changed = false;
+  for (const id of [...AUDIO.keys()]) {
+    const c = cardById(id);
+    if (!c || !c.has_audio) { await dropAudio(id); changed = true }   // 錄音已被刪除
+  }
+  const want = state.data.cards.filter(c => c.has_audio && (!AUDIO.has(c.id) || AUDIO.get(c.id).updated !== c.audio_updated)).map(c => c.id);
+  for (let i = 0; i < want.length; i += AUDIO_BATCH) {
+    if (onProgress) onProgress(i, want.length);
+    const r = await api("getAudio", { card_ids: want.slice(i, i + AUDIO_BATCH) });
+    for (const id of Object.keys(r.audio || {})) {
+      const a = r.audio[id];
+      await setAudio(id, b64ToBlob(a.base64, a.mime), a.updated);
+      changed = true;
+    }
+  }
+  if (onProgress && want.length) onProgress(want.length, want.length);
+  return changed;
 }
 function syncQuietly() {
   if (!state.token || !navigator.onLine) return;
@@ -181,14 +279,32 @@ function speak(text, lang) {
   if (!v && voices.length && lang === "id-ID") toast(t("找不到印尼語語音，請見「設定」→ 裝置檢查", "Suara Indonesia tidak ditemukan, lihat Pengaturan"));
   speechSynthesis.speak(u);
 }
-/* 播台語錄音。錄音同步在階段 3 加入，目前一律先用華語代替 */
+/* 播家人錄的台語；沒有錄音或這台裝置播不了時，用華語代替 */
+function playBlob(blob, onFail) {
+  stopAll();
+  const url = URL.createObjectURL(blob), a = new Audio(url);
+  curAudio = a;
+  let failed = false;
+  const fail = () => { if (failed) return; failed = true; URL.revokeObjectURL(url); if (curAudio === a) curAudio = null; if (onFail) onFail() };
+  a.onended = () => URL.revokeObjectURL(url);
+  a.onerror = fail;
+  a.play().catch(fail);
+}
 function playTw(card) {
-  speak(card.zh, "zh-TW");
-  toast(t("這張還沒有台語錄音，先用華語播放", "Belum ada rekaman bahasa Taiwan, diputar dalam bahasa Mandarin"));
+  const rec = AUDIO.get(card.id);
+  if (!rec) {
+    speak(card.zh, "zh-TW");
+    toast(t("這張還沒有台語錄音，先用華語播放", "Belum ada rekaman bahasa Taiwan, diputar dalam bahasa Mandarin"));
+    return;
+  }
+  playBlob(rec.blob, () => {
+    speak(card.zh, "zh-TW");
+    toast(t("這台裝置播不了這段錄音，先用華語播放", "Rekaman tidak bisa diputar di perangkat ini, diputar dalam bahasa Mandarin"));
+  });
 }
 
 /* ---------- 分頁與圖卡 ---------- */
-function tabsForRole() { return (ROLE_TABS[state.role] || ["set"]).filter(k => k === "set" || TAB_DEFS[k].cats.some(hasCat)) }
+function tabsForRole() { return (ROLE_TABS[state.role] || ["set"]).filter(k => !TAB_DEFS[k].cats.length || TAB_DEFS[k].cats.some(hasCat)) }
 
 function renderTabs() {
   const n = $("#tabs"); n.innerHTML = "";
@@ -208,7 +324,7 @@ function cardEl(c, idFirst) {
     : `<span class="l1">${esc(c.zh)}</span><span class="l2 idn">${esc(c.id_text)}</span>`;
   b.innerHTML = `<span class="em" aria-hidden="true">${iconHTML(c.icon)}</span>${lines}` +
     (c.is_question ? `<span class="q">${idFirst ? "Pertanyaan" : "問句"}</span>` : "") +
-    (c.status === "pending" ? '<span class="tag">待審核</span>' : "");
+    (c.status === "pending" ? '<span class="tag">待審核</span>' : AUDIO.has(c.id) ? `<span class="tag ok">${idFirst ? "Taiwan ✓" : "台語 ✓"}</span>` : "");
   b.onclick = () => openCard(c);
   return b;
 }
@@ -246,6 +362,7 @@ function render() {
   renderTabs();
   const m = $("#main"); m.innerHTML = "";
   if (state.tab === "set") { renderSettings(m); return }
+  if (state.tab === "rec") { renderRecordings(m); return }
   if (!TTS_OK) {
     const b = h("div", "panel", `<h3 style="color:var(--emg)">${t("這個瀏覽器無法發音", "Browser ini tidak bisa bersuara")}</h3><p style="margin:0">${t("圖卡仍可看文字。要有聲音，請改用 Chrome 開啟。", "Kartu tetap bisa dibaca. Agar ada suara, buka dengan Chrome.")}</p>`);
     m.appendChild(b);
@@ -282,7 +399,8 @@ function render() {
 /* ---------- 大卡 ---------- */
 const sheetOpen = () => $("#ov").classList.contains("open");
 let activePad = null;   // 浮層或登入畫面上的 PIN 鍵盤，供實體鍵盤輸入
-function closeSheet() { stopAll(); $("#ov").classList.remove("open"); if (appStarted) activePad = null }
+let recCleanup = null;  // 錄音浮層關閉時要停掉麥克風
+function closeSheet() { stopAll(); if (recCleanup) { recCleanup(); recCleanup = null } $("#ov").classList.remove("open"); if (appStarted) activePad = null }
 $("#ov").addEventListener("click", e => { if (e.target.id === "ov") closeSheet() });
 document.addEventListener("keydown", e => {
   if (e.key === "Escape" && sheetOpen()) { closeSheet(); return }
@@ -303,7 +421,8 @@ function openCard(c) {
   const mk = (label, cls, fn) => { const b = h("button", "btn " + (cls || "")); b.textContent = label; b.onclick = fn; bt.appendChild(b); return b };
   mk("🔊 印尼語 Indonesia", "", () => speak(c.id_text, "id-ID"));
   mk("🔊 華語 Mandarin", "", () => speak(c.zh, "zh-TW"));
-  if (play === "tw" || c.cat === "emg") mk("🔊 台語 Taiwan", "", () => playTw(c));
+  if (play === "tw" || c.cat === "emg" || AUDIO.has(c.id)) mk(AUDIO.has(c.id) ? "🔊 台語 Taiwan" : "🔊 台語（未錄）", "", () => playTw(c));
+  if (canRecord() && state.tab !== "elder" && REC_CATS.includes(c.cat)) mk(AUDIO.has(c.id) ? "🎙 重錄台語" : "🎙 錄台語", "", () => openRecorder(c));
   mk("關閉 Tutup", "solid", closeSheet);
 
   if (c.is_question) {
@@ -341,7 +460,157 @@ function openEmergency() {
 }
 $("#emgBtn").onclick = openEmergency;
 
-/* ---------- PIN 鍵盤（登入與平板設定共用） ---------- */
+/* ---------- 台語錄音（家人、管理者） ---------- */
+const REC_CATS = ["toElder", "emg", "daily"];   // 錄音清單的順序：對長輩說 → 緊急 → 日常
+const REC_MAX_SECONDS = 15;
+const REC_MAX_BYTES = 1024 * 1024;
+
+function renderRecordings(m) {
+  const cats = REC_CATS.filter(hasCat);
+  const all = cats.reduce((a, k) => a.concat(cardsOf(k)), []);
+  const done = all.filter(c => AUDIO.has(c.id)).length;
+  m.appendChild(h("div", "panel", `<h3>台語錄音　已錄 ${done} / ${all.length}</h3><p style="margin:0">請用台語唸出每一句。看護點卡片時，會播放您的聲音給長輩聽。錄一次，所有裝置都能播放。先錄「對長輩說」和「緊急」這兩組最重要。</p>`));
+  cats.forEach(k => {
+    const cat = catOf(k), box = h("div", "panel");
+    const head = tint(h("h3"), cat.color); head.style.color = "var(--c)"; head.textContent = cat.zh;
+    const list = h("div", "list");
+    cardsOf(k).forEach(c => {
+      const has = AUDIO.has(c.id);
+      const row = h("div", "rowi", `<span class="em" aria-hidden="true" style="font-size:2.2rem;display:inline-flex">${iconHTML(c.icon)}</span><div class="t">${esc(c.zh)}<small class="idn">${esc(c.id_text)}</small></div><span class="s ${has ? "ok" : ""}">${has ? "已錄" : "未錄"}</span>`);
+      if (has) { const pb = h("button", "sm"); pb.textContent = "▶"; pb.setAttribute("aria-label", "播放 " + c.zh); pb.onclick = () => playTw(c); row.appendChild(pb) }
+      const rb = h("button", "sm" + (has ? "" : " solid")); rb.textContent = has ? "重錄" : "🎙 錄音"; rb.onclick = () => openRecorder(c); row.appendChild(rb);
+      list.appendChild(row);
+    });
+    box.append(head, list);
+    m.appendChild(box);
+  });
+}
+
+/* 選 Safari 與 Chrome 都播得了的格式：優先 mp4（AAC），不行才用 webm */
+function recMime() {
+  if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return "";
+  return ["audio/mp4;codecs=mp4a.40.2", "audio/mp4", "audio/webm;codecs=opus", "audio/webm"].find(x => MediaRecorder.isTypeSupported(x)) || "";
+}
+function fileMime(f) {
+  if (f.type && f.type.startsWith("audio/")) return f.type;
+  const ext = (f.name.split(".").pop() || "").toLowerCase();
+  return { m4a: "audio/mp4", mp4: "audio/mp4", aac: "audio/aac", mp3: "audio/mpeg", wav: "audio/wav", ogg: "audio/ogg", webm: "audio/webm", "3gp": "audio/3gpp", amr: "audio/amr" }[ext] || f.type || "";
+}
+
+/* 錄音浮層：錄音（或選檔）→ 試聽 → 確認上傳 */
+function openRecorder(c) {
+  stopAll();
+  const sh = tint($("#sheet"), catOf(c.cat).color);
+  let stream = null, recorder = null, timer = null, take = null, busy = false;   // take：{ blob, mime } 待上傳的錄音
+  const stopMic = () => { clearInterval(timer); if (recorder && recorder.state === "recording") { recorder.onstop = null; recorder.stop() } if (stream) stream.getTracks().forEach(x => x.stop()); stream = null; recorder = null };
+  recCleanup = stopMic;
+
+  const draw = (status, bad) => {
+    const has = AUDIO.has(c.id), recording = !!recorder;
+    sh.innerHTML = `<div class="em" aria-hidden="true">${iconHTML(c.icon)}</div><div class="big1">${esc(c.zh)}</div><div class="big2 idn">${esc(c.id_text)}</div>
+      <div class="note" id="rs" role="status" style="font-size:1rem;${bad ? "color:var(--emg);font-weight:700" : ""}">${esc(status || (take ? "錄好了，請先試聽，沒問題再按「確認上傳」。" : has ? "這張已經有台語錄音，重錄會取代原本的。" : "請用台語唸出這一句，最長 " + REC_MAX_SECONDS + " 秒。"))}</div>
+      <div class="btns" id="rb"></div>`;
+    const bt = sh.querySelector("#rb");
+    const mk = (label, cls, fn) => { const b = h("button", "btn " + (cls || "")); b.textContent = label; b.onclick = fn; b.disabled = busy; bt.appendChild(b); return b };
+    if (recording) { mk("■ 停止錄音", "danger solid-danger", () => recorder && recorder.stop()).disabled = false; return }
+    if (take) {
+      mk("▶ 試聽", "", () => playBlob(take.blob, () => toast("這台裝置無法試聽這段錄音")));
+      mk("✔ 確認上傳", "solid", upload);
+      mk("🎙 重錄", "", start);
+    } else {
+      mk(has ? "🎙 重錄" : "🎙 開始錄音", "solid", start);
+      mk("📁 選擇錄音檔", "", pickFile);
+      if (has) { mk("▶ 播放目前的", "", () => playTw(c)); mk("刪除錄音", "danger", remove) }
+    }
+    mk("關閉", "", closeSheet);
+  };
+
+  async function start() {
+    stopAll(); take = null;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) { draw("這台裝置無法直接錄音，請改按「選擇錄音檔」。", true); return }
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }) }
+    catch (e) { draw("這裡無法使用麥克風（" + e.name + "），請改按「選擇錄音檔」。", true); return }
+    const mime = recMime(), chunks = [];
+    try { recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream) }
+    catch (e) { stopMic(); draw("無法開始錄音，請改按「選擇錄音檔」。", true); return }
+    const rec = recorder;
+    rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data) };
+    rec.onstop = () => {
+      const type = (rec.mimeType || mime || "audio/webm");
+      stopMic();
+      const blob = new Blob(chunks, { type });
+      if (!blob.size) { draw("沒有錄到聲音，請再試一次。", true); return }
+      take = { blob, mime: type };
+      draw();
+    };
+    rec.start();
+    let left = REC_MAX_SECONDS;
+    draw("錄音中… 剩 " + left + " 秒");
+    timer = setInterval(() => {
+      left--;
+      const el = sh.querySelector("#rs"); if (el) el.textContent = "錄音中… 剩 " + left + " 秒";
+      if (left <= 0 && rec.state === "recording") rec.stop();
+    }, 1000);
+  }
+
+  function pickFile() {
+    const inp = h("input"); inp.type = "file"; inp.accept = "audio/*"; inp.style.display = "none";
+    document.body.appendChild(inp);
+    inp.onchange = () => {
+      const f = inp.files && inp.files[0]; inp.remove();
+      if (!f) return;
+      const mime = fileMime(f);
+      if (!mime.startsWith("audio/")) { draw("這不是錄音檔，請選擇音訊檔案。", true); return }
+      if (f.size > REC_MAX_BYTES) { draw("檔案超過 1 MB，請錄短一點（15 秒內）。", true); return }
+      take = { blob: f, mime };
+      draw();
+    };
+    inp.click();
+  }
+
+  async function upload() {
+    if (!take || busy) return;
+    if (take.blob.size > REC_MAX_BYTES) { draw("錄音超過 1 MB，請錄短一點。", true); return }
+    busy = true; draw("上傳中，請稍候…");
+    try {
+      const r = await api("uploadAudio", { card_id: c.id, base64: await blobToB64(take.blob), mime: take.mime });
+      await setAudio(c.id, take.blob, r.audio_updated);
+      c.has_audio = true; c.audio_updated = r.audio_updated;
+      state.data.data_version = r.data_version;
+      await saveData(state.data);
+      take = null; busy = false;
+      toast("台語錄音已上傳，其他裝置下次開啟時會自動下載");
+      closeSheet(); render();
+    } catch (e) {
+      busy = false;
+      if (state.token) draw("上傳失敗：" + errPair(e)[0], true);
+    }
+  }
+
+  async function remove() {
+    if (busy || !confirm("確定要刪除這張的台語錄音嗎？")) return;
+    busy = true; draw("刪除中…");
+    try {
+      const r = await api("deleteAudio", { card_id: c.id });
+      await dropAudio(c.id);
+      c.has_audio = false; c.audio_updated = "";
+      state.data.data_version = r.data_version;
+      await saveData(state.data);
+      busy = false;
+      toast("已刪除");
+      closeSheet(); render();
+    } catch (e) {
+      busy = false;
+      if (state.token) draw("刪除失敗：" + errPair(e)[0], true);
+    }
+  }
+
+  draw();
+  $("#ov").classList.add("open");
+  sh.scrollTop = 0;
+}
+
+/* ---------- PIN 鍵盤 ---------- */
 /* onSubmit(pin) 回傳錯誤訊息字串，或 null 代表成功 */
 function pinPad(onSubmit) {
   const wrap = h("div"), dots = h("div", "dots"), msg = h("div", "pin-msg"), pad = h("div", "pad");
@@ -390,10 +659,10 @@ function showLogin() {
       const d = await api("login", { pin, device_id: deviceId(), device_label: state.label });
       state.token = d.token; state.role = d.role;
       LS.set(K.token, d.token); LS.set(K.role, d.role);
-      if (d.bootstrap) { state.data = d.bootstrap; LS.set(K.data, d.bootstrap) }   // 登入時已附上資料
+      if (d.bootstrap) await saveData(d.bootstrap);   // 登入時已附上圖卡資料
     } catch (e) { const p = errPair(e); return p[0] + " · " + p[1] }
     activePad = null;
-    if (!state.label) showNaming(); else if (state.data) startApp(); else firstLoad();
+    state.label ? firstLoad() : showNaming();
     return null;
   });
   g.appendChild(activePad.el);
@@ -417,28 +686,36 @@ function showNaming() {
     state.label = name; LS.set(K.label, name);
     if (name === "客廳平板") LS.set(K.tablet, true);   // 取這個名字就直接開啟客廳平板模式
     api("setLabel", { device_label: name }).catch(() => {});
-    if (state.data) startApp(); else firstLoad();
+    firstLoad();
   };
 }
 
-/* 第一次下載資料（階段 3 會在這裡加上錄音下載的進度） */
+/* 第一次下載：圖卡資料（登入時通常已附上）加上全部台語錄音，顯示進度 */
 async function firstLoad() {
   const m = $("#main"); m.innerHTML = "";
-  const g = h("div", "gate", `<h2>下載資料中…</h2><p class="sub">Mengunduh data…</p><div class="progress"><i id="pg"></i></div><div class="pin-msg" id="lm"></div>`);
+  const g = h("div", "gate", `<h2>下載資料中…</h2><p class="sub">Mengunduh data…</p><div class="progress"><i id="pg"></i></div><div class="pin-msg wait" id="lm"></div>`);
   m.appendChild(g);
-  const bar = g.querySelector("#pg");
-  requestAnimationFrame(() => { bar.style.width = "35%" });
-  try {
-    await sync(true);
-    bar.style.width = "100%";
-    startApp();
-  } catch (e) {
-    if (!state.token) return;   // 權杖失效時已回到 PIN 畫面
-    const p = errPair(e);
-    g.querySelector("#lm").textContent = p[0] + " · " + p[1];
-    const b = h("button", "btn solid"); b.textContent = "再試一次 · Coba lagi"; b.onclick = firstLoad;
-    g.appendChild(b);
+  const bar = g.querySelector("#pg"), msg = g.querySelector("#lm");
+  const prog = (done, total) => { bar.style.width = (25 + 75 * done / total) + "%"; msg.textContent = `台語錄音 ${done} / ${total} · Rekaman ${done} / ${total}` };
+  requestAnimationFrame(() => { bar.style.width = "25%" });
+  if (!state.data) {
+    try { await sync(true, prog) }
+    catch (e) {
+      if (!state.token) return;   // 權杖失效時已回到 PIN 畫面
+      if (!state.data) {
+        const p = errPair(e);
+        msg.classList.remove("wait"); msg.textContent = p[0] + " · " + p[1];
+        const b = h("button", "btn solid"); b.textContent = "再試一次 · Coba lagi"; b.onclick = firstLoad;
+        g.appendChild(b);
+        return;
+      }
+    }
+  } else {
+    // 錄音沒下載完也先進主畫面，之後會在背景補齊
+    try { await syncAudio(prog) } catch (e) { if (!state.token) return }
   }
+  bar.style.width = "100%";
+  startApp();
 }
 
 function startApp() {
@@ -533,6 +810,7 @@ function renderSettings(m) {
     row(t("角色", "Peran"), "dRole", esc(t(rn[0], rn[1]))) +
     row(t("名稱", "Nama"), "dName", esc(state.label)) +
     row(t("資料版本", "Versi data"), "dVer", esc(state.data.data_version)) +
+    row(t("台語錄音", "Rekaman bahasa Taiwan"), "dAud", AUDIO.size + " / " + state.data.cards.filter(c => c.has_audio).length) +
     `</div><div class="btns"><button class="btn" id="bSync">${t("重新下載資料", "Unduh ulang data")}</button><button class="btn" id="bName">${t("改名稱", "Ganti nama")}</button><button class="btn danger" id="bOut">${t("登出", "Keluar")}</button></div>`);
   m.appendChild(p1);
   p1.querySelector("#bSync").onclick = async e => {
@@ -569,16 +847,19 @@ function renderSettings(m) {
 }
 
 /* ---------- 啟動 ---------- */
-showOffline();
-if (!API_URL) {
-  $("#main").appendChild(h("div", "panel", "<h3>尚未設定後端網址</h3><p style='margin:0'>請在 config.js 填入 API_URL。</p>"));
-} else if (!state.token) {
-  showLogin();
-} else if (state.data) {
-  startApp();        // 有快取就直接進入，背景再比對版本
-  syncQuietly();
-} else if (!state.label) {
-  showNaming();
-} else {
-  firstLoad();
+if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
+  navigator.serviceWorker.register("sw.js").catch(() => {});
 }
+(async function boot() {
+  showOffline();
+  if (!API_URL) {
+    $("#main").appendChild(h("div", "panel", "<h3>尚未設定後端網址</h3><p style='margin:0'>請在 config.js 填入 API_URL。</p>"));
+    return;
+  }
+  if (!state.token) { showLogin(); return }
+  state.data = await loadData();
+  await loadAudio();
+  if (state.data) { startApp(); syncQuietly() }   // 有快取就直接進入，背景再比對版本
+  else if (!state.label) showNaming();
+  else firstLoad();
+})();

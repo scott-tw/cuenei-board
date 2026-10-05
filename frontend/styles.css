@@ -70,6 +70,7 @@ h2.sec small{font-family:var(--id);font-weight:400;color:var(--muted)}
 .card .q{position:absolute;top:8px;right:10px;font-size:.75rem;font-weight:700;color:var(--c)}
 .card .tag{position:absolute;bottom:8px;right:10px;font-size:.75rem;font-weight:700;color:var(--muted)}
 .card.pending{border-style:dashed;border-top-style:solid}
+.card .tag.ok{color:var(--ok)}
 .grid.elder{grid-template-columns:repeat(3,1fr);gap:14px}
 .grid.elder .card{align-items:center;text-align:center;min-height:210px;justify-content:center;border-top-width:8px}
 .grid.elder .em{font-size:5rem}
@@ -135,6 +136,10 @@ h2.sec small{font-family:var(--id);font-weight:400;color:var(--muted)}
 .rowi .s{font-size:.85rem;color:var(--muted);text-align:right}
 .rowi .s.ok{color:var(--ok);font-weight:700}
 .rowi .s.bad{color:var(--emg);font-weight:700}
+.rowi .t small{display:block;color:var(--muted);font-size:.85rem}
+.sm{min-height:48px;min-width:48px;border:2px solid var(--line);background:transparent;border-radius:10px;padding:6px 12px;font-weight:600}
+.sm.solid{background:var(--ink);border-color:var(--ink);color:var(--bg)}
+.btn.solid-danger{background:var(--emg);color:var(--on-c)}
 
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:12px;z-index:80;opacity:0;pointer-events:none;transition:opacity .2s;max-width:90vw;text-align:center}
 .toast.show{opacity:1}
