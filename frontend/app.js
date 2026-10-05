@@ -3,7 +3,9 @@
 
 /* ---------- 設定與本機儲存 ---------- */
 const API_URL = (window.CUENEI_CONFIG && window.CUENEI_CONFIG.API_URL) || "";
-const K = { token: "cb-token", role: "cb-role", dev: "cb-device-id", label: "cb-device-label", data: "cb-data", tab: "cb-tab", wake: "cb-wake" };
+const K = { token: "cb-token", role: "cb-role", dev: "cb-device-id", label: "cb-device-label", data: "cb-data", tab: "cb-tab", tablet: "cb-tablet" };
+/* 客廳平板模式是「這台裝置」的設定，不是角色 */
+const tabletMode = () => LS.get(K.tablet, false);
 const LS = {
   get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v) } catch (e) { return d } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)) } catch (e) {} },
@@ -25,12 +27,12 @@ const TAB_DEFS = {
   carer:  { zh: "看護", id: "Perawat", cats: ["toElder", "report"] },
   set:    { zh: "設定", id: "Pengaturan", cats: [] }
 };
-const ROLE_TABS = { board: ["elder", "family", "set"], family: ["family", "set"], carer: ["carer", "set"], admin: ["elder", "family", "carer", "set"] };
-const ROLE_NAMES = { admin: ["管理者", "Admin"], family: ["家人", "Keluarga"], carer: ["看護", "Perawat"], board: ["客廳平板", "Tablet ruang tamu"] };
+const ROLE_TABS = { family: ["elder", "family", "set"], carer: ["carer", "set"], admin: ["elder", "family", "carer", "set"] };
+const ROLE_NAMES = { admin: ["管理者", "Admin"], family: ["家人", "Keluarga"], carer: ["看護", "Perawat"] };
 
 const state = {
   token: LS.get(K.token, ""), role: LS.get(K.role, ""), label: LS.get(K.label, ""),
-  data: LS.get(K.data, null), tab: LS.get(K.tab, ""), cat: "all", setUnlocked: false
+  data: LS.get(K.data, null), tab: LS.get(K.tab, ""), cat: "all"
 };
 
 const $ = s => document.querySelector(s);
@@ -91,7 +93,7 @@ function authLost() {
   showLogin();
 }
 function clearSession() {
-  state.token = ""; state.role = ""; state.data = null; state.setUnlocked = false;
+  state.token = ""; state.role = ""; state.data = null;
   [K.token, K.role, K.data, K.tab].forEach(LS.del);
 }
 
@@ -194,7 +196,7 @@ function renderTabs() {
     const d = TAB_DEFS[k], b = h("button");
     b.setAttribute("role", "tab"); b.setAttribute("aria-selected", state.tab === k);
     b.innerHTML = state.role === "carer" ? `<span class="idn">${d.id}</span><small style="font-family:var(--zh)">${d.zh}</small>` : `${d.zh}<small>${d.id}</small>`;
-    b.onclick = () => { stopAll(); state.tab = k; state.cat = "all"; state.setUnlocked = false; LS.set(K.tab, k); render(); window.scrollTo(0, 0) };
+    b.onclick = () => { stopAll(); state.tab = k; state.cat = "all"; LS.set(K.tab, k); render(); window.scrollTo(0, 0) };
     n.appendChild(b);
   });
 }
@@ -239,7 +241,8 @@ function section(key, idFirst) {
 
 function render() {
   const tabs = tabsForRole();
-  if (!tabs.includes(state.tab)) state.tab = tabs[0];
+  // 預設分頁：客廳平板模式先顯示「阿嬤」，其餘先顯示自己角色的主分頁
+  if (!tabs.includes(state.tab)) state.tab = (tabletMode() && tabs.includes("elder")) ? "elder" : tabs.includes("family") ? "family" : tabs[0];
   renderTabs();
   const m = $("#main"); m.innerHTML = "";
   if (state.tab === "set") { renderSettings(m); return }
@@ -399,7 +402,7 @@ function showLogin() {
 
 function showNaming() {
   const m = $("#main"); m.innerHTML = "";
-  const presets = { board: ["客廳平板"], carer: ["HP Perawat（看護手機）"], family: ["家人手機", "家人平板"], admin: ["管理者手機", "管理者電腦"] }[state.role] || [];
+  const presets = { carer: ["HP Perawat（看護手機）"], family: ["家人手機", "客廳平板"], admin: ["管理者手機", "管理者電腦"] }[state.role] || [];
   const g = h("div", "gate", `<h2>幫這台裝置取個名字</h2><p class="sub">Beri nama perangkat ini</p>
     <input class="field" id="nm" maxlength="40" autocomplete="off" aria-label="裝置名稱 Nama perangkat">
     <div class="presets" id="ps"></div>
@@ -412,6 +415,7 @@ function showNaming() {
     const name = inp.value.trim();
     if (!name) { inp.focus(); return }
     state.label = name; LS.set(K.label, name);
+    if (name === "客廳平板") LS.set(K.tablet, true);   // 取這個名字就直接開啟客廳平板模式
     api("setLabel", { device_label: name }).catch(() => {});
     if (state.data) startApp(); else firstLoad();
   };
@@ -449,7 +453,7 @@ let slotTimer = null, reloadTimer = null, wakeLock = null;
 function startTimers() {
   stopTimers();
   slotTimer = setInterval(() => { if (["family", "carer"].includes(state.tab) && !sheetOpen()) render() }, 5 * 60 * 1000);
-  if (state.role === "board") {
+  if (tabletMode()) {
     // 客廳平板每天凌晨 3:00 自動重新整理一次
     const now = new Date(), next = new Date(now);
     next.setHours(3, 0, 0, 0);
@@ -460,7 +464,7 @@ function startTimers() {
 }
 function stopTimers() { clearInterval(slotTimer); clearTimeout(reloadTimer); releaseWake() }
 async function applyWake() {
-  if (state.role !== "board" || !LS.get(K.wake, true) || !("wakeLock" in navigator) || document.visibilityState !== "visible") return;
+  if (!tabletMode() || !("wakeLock" in navigator) || document.visibilityState !== "visible") return;
   try { wakeLock = await navigator.wakeLock.request("screen") } catch (e) {}
 }
 function releaseWake() { if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null } }
@@ -486,13 +490,6 @@ function browserName() {
 }
 
 function renderSettings(m) {
-  // 客廳平板放在公共空間，進設定前要再輸入管理者或家人的 PIN
-  if (state.role === "board" && !state.setUnlocked) {
-    const p = h("div", "panel", `<h3>設定已上鎖</h3><p>請輸入管理者或家人的 PIN。</p><div class="btns" style="margin-top:0"><button class="btn solid" id="ul">輸入 PIN</button></div>`);
-    p.querySelector("#ul").onclick = openUnlock;
-    m.appendChild(p);
-    return;
-  }
   const row = (label, id, text) => `<div class="rowi"><div class="t">${label}</div><span class="s" id="${id}">${text}</span></div>`;
   const mark = (id, ok, text) => { const e = $("#" + id); if (!e) return; e.textContent = text; e.className = "s " + (ok ? "ok" : "bad") };
   const untested = t("未測試", "Belum diuji");
@@ -557,11 +554,11 @@ function renderSettings(m) {
     showLogin();
   };
 
-  // ---- 客廳平板：螢幕常亮 ----
-  if (state.role === "board") {
-    const on = LS.get(K.wake, true), sup = "wakeLock" in navigator;
-    const p2 = h("div", "panel", `<h3>螢幕常亮</h3><p>${sup ? "開啟後，平板停在這個頁面時螢幕不會自動關閉。每天凌晨 3:00 會自動重新整理一次。" : "這個瀏覽器不支援螢幕常亮，請到平板的系統設定把螢幕逾時調長。"}</p><div class="btns" style="margin-top:0"><button class="btn${on ? " solid" : ""}" id="bWake" ${sup ? "" : "disabled"}>${on ? "已開啟（點一下關閉）" : "已關閉（點一下開啟）"}</button></div>`);
-    p2.querySelector("#bWake").onclick = () => { LS.set(K.wake, !on); releaseWake(); applyWake(); render() };
+  // ---- 客廳平板模式：這台裝置專屬的設定，看護手機不需要 ----
+  if (state.role !== "carer") {
+    const on = tabletMode(), sup = "wakeLock" in navigator;
+    const p2 = h("div", "panel", `<h3>客廳平板模式</h3><p>放在客廳給阿嬤用的平板請開啟：預設顯示「阿嬤」分頁、螢幕保持常亮、每天凌晨 3:00 自動重新整理一次。${sup ? "" : "<br><b>這個瀏覽器不支援螢幕常亮</b>，請到平板的系統設定把螢幕逾時調長。"}</p><div class="btns" style="margin-top:0"><button class="btn${on ? " solid" : ""}" id="bTab">${on ? "已開啟（點一下關閉）" : "已關閉（點一下開啟）"}</button></div>`);
+    p2.querySelector("#bTab").onclick = () => { LS.set(K.tablet, !on); startTimers(); render() };
     m.appendChild(p2);
   }
 
@@ -569,28 +566,6 @@ function renderSettings(m) {
   m.appendChild(h("div", "panel", `<h3>${t("使用說明", "Cara pakai")}</h3><p style="margin:0">${t(
     "「阿嬤」：長輩點卡片，播印尼語給看護聽。「家人」：交辦事情，播印尼語。「看護」：介面以印尼文為主，「對長輩說」播家人錄的台語，「回報家人」播華語。上方會依時間表顯示現在這個時段常用的句子。紅色「緊急」按鈕隨時可用，會顯示處理步驟。",
     "Ketuk kartu untuk memutar suara. “Bicara ke Nenek / Kakek” diputar dalam bahasa Taiwan (rekaman keluarga). “Lapor ke Keluarga” diputar dalam bahasa Mandarin. Di bagian atas ada kartu yang sering dipakai pada jam ini. Tombol merah “Darurat” selalu bisa dipakai dan menampilkan langkah-langkahnya.")}</p>`));
-}
-
-/* 平板設定解鎖：用 PIN 向後端登入一次確認角色，確認後立刻把那個權杖登出 */
-function openUnlock() {
-  const sh = $("#sheet"); sh.classList.remove("tint"); sh.style.setProperty("--c", "var(--accent)");
-  sh.innerHTML = `<div class="gate" style="padding-top:0"><h2>請輸入管理者或家人的 PIN</h2></div>`;
-  activePad = pinPad(async pin => {
-    let d;
-    try { d = await api("login", { pin, device_id: deviceId(), device_label: state.label }) }
-    catch (e) { return errPair(e)[0] }
-    fetch(API_URL, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "logout", token: d.token }) }).catch(() => {});
-    if (d.role !== "admin" && d.role !== "family") return "這組 PIN 不能開啟設定";
-    state.setUnlocked = true;
-    closeSheet(); render();
-    return null;
-  });
-  const g = sh.querySelector(".gate");
-  g.appendChild(activePad.el);
-  const c = h("div", "btns"); c.style.justifyContent = "center";
-  const b = h("button", "btn"); b.textContent = "取消"; b.onclick = closeSheet; c.appendChild(b);
-  g.appendChild(c);
-  $("#ov").classList.add("open");
 }
 
 /* ---------- 啟動 ---------- */
