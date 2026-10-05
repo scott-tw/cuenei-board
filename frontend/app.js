@@ -43,17 +43,29 @@ function toast(msg) { const el = $("#toast"); el.textContent = msg; el.classList
 
 /* ---------- 後端呼叫 ---------- */
 /* 一律 POST、Content-Type 用 text/plain，避免瀏覽器送出預檢請求 */
-async function api(action, params) {
-  let res;
+const RETRY_ACTIONS = ["version", "bootstrap", "translate", "getAudio"];   // 只有讀取類會自動重試一次
+const API_TIMEOUT_MS = 60000;
+async function post(body) {
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), API_TIMEOUT_MS);
   try {
     const r = await fetch(API_URL, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify(Object.assign({ action, token: state.token }, params || {})),
-      redirect: "follow"
+      body: JSON.stringify(body),
+      redirect: "follow",
+      signal: ctl.signal
     });
-    res = await r.json();
-  } catch (e) { throw { code: "network" } }
+    return await r.json();
+  } finally { clearTimeout(timer) }
+}
+async function api(action, params) {
+  const body = Object.assign({ action, token: state.token }, params || {});
+  let res;
+  try { res = await post(body) }
+  catch (e) {
+    if (!RETRY_ACTIONS.includes(action)) throw { code: "network" };
+    try { res = await post(body) } catch (e2) { throw { code: "network" } }
+  }
   if (!res || !res.ok) {
     const err = (res && res.error) || { code: "server" };
     if (err.code === "auth" && action !== "login" && state.token) authLost();
@@ -64,7 +76,7 @@ async function api(action, params) {
 const ERR = {
   auth: ["PIN 不正確", "PIN salah"],
   locked: ["輸入錯誤次數過多，請 15 分鐘後再試", "Terlalu sering salah. Coba lagi 15 menit lagi"],
-  network: ["連不上網路，請檢查連線", "Tidak ada koneksi internet"],
+  network: ["連線失敗或伺服器太久沒回應，請再試一次", "Koneksi gagal atau server terlalu lama, coba lagi"],
   quota: ["今日翻譯次數已達上限", "Batas terjemahan hari ini sudah habis"],
   forbidden: ["這個角色不能執行此操作", "Peran ini tidak boleh melakukan ini"]
 };
@@ -341,9 +353,13 @@ function pinPad(onSubmit) {
     draw();
     if (pin.length === 6) {
       busy = true; draw();
+      // 後端有時要等好幾秒，先讓使用者知道有在處理
+      msg.classList.add("wait"); msg.textContent = "確認中，請稍候… · Mohon tunggu…";
+      const slow = setTimeout(() => { msg.textContent = "伺服器回應較慢，請再等一下… · Server lambat, mohon tunggu…" }, 6000);
       const err = await onSubmit(pin);
+      clearTimeout(slow);
       busy = false; pin = "";
-      if (err) msg.textContent = err;
+      msg.classList.remove("wait"); msg.textContent = err || "";
       draw();
     }
   };
@@ -371,9 +387,10 @@ function showLogin() {
       const d = await api("login", { pin, device_id: deviceId(), device_label: state.label });
       state.token = d.token; state.role = d.role;
       LS.set(K.token, d.token); LS.set(K.role, d.role);
+      if (d.bootstrap) { state.data = d.bootstrap; LS.set(K.data, d.bootstrap) }   // 登入時已附上資料
     } catch (e) { const p = errPair(e); return p[0] + " · " + p[1] }
     activePad = null;
-    state.label ? firstLoad() : showNaming();
+    if (!state.label) showNaming(); else if (state.data) startApp(); else firstLoad();
     return null;
   });
   g.appendChild(activePad.el);
@@ -396,7 +413,7 @@ function showNaming() {
     if (!name) { inp.focus(); return }
     state.label = name; LS.set(K.label, name);
     api("setLabel", { device_label: name }).catch(() => {});
-    firstLoad();
+    if (state.data) startApp(); else firstLoad();
   };
 }
 

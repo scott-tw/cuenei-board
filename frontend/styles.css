@@ -114,6 +114,7 @@ h2.sec small{font-family:var(--id);font-weight:400;color:var(--muted)}
 .dots span{width:18px;height:18px;border-radius:50%;border:2px solid var(--ink)}
 .dots span.on{background:var(--ink)}
 .pin-msg{min-height:3em;color:var(--emg);font-weight:700;font-size:.95rem}
+.pin-msg.wait{color:var(--muted)}
 .pad{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
 .pad button{min-height:68px;font-size:1.8rem;font-weight:700;border:2px solid var(--line);background:var(--surface);border-radius:16px}
 .pad button:active{background:var(--line)}
