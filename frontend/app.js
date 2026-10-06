@@ -714,6 +714,56 @@ function talkHalf(lang, flip) {
 /* ---------- 新增圖卡（家人、管理者） ---------- */
 const ADD_CATS = [["care", "家人：照護"], ["food", "家人：飲食"], ["home", "家人：家務"], ["daily", "家人：日常"], ["toElder", "看護：對長輩說（台語）"], ["report", "看護：回報家人"], ["elder", "阿嬤專區"]];
 
+/* 常用圖示：按「圖示」欄會展開這份清單，直接點選 */
+const ICON_SETS = [
+  ["常用", "💬 👍 👎 ✅ ❌ ❓ ❗ 🙏 ❤️ 😊 😢 😣 😴 🤒 🤕 🤢 🥶 🥵"],
+  ["飲食", "🍚 🍜 🥣 🍞 🥚 🍎 🍌 🥬 🍖 🐟 💧 🥛 🍵 ☕ 🧃 🥄 🍽️"],
+  ["照護", "💊 💉 🩺 🌡️ 🩹 🦷 👂 👁️ 🦵 🦶 ✋ 🚽 🧻 🚿 🛁 🪥 🧼 🧴 🛏️ ♿ 🦽 🦯"],
+  ["家務", "🧹 🧺 👕 🧦 🗑️ 🍳 🛒 🪟 🚪 💡 ❄️ 🔥 🔑 📦"],
+  ["日常", "☀️ 🌙 🌧️ ⏰ 📺 📻 📞 📱 🚶 🚗 🚑 🏥 🏠 🌳 👓 💰 🎵 👵 👴"]
+];
+const iconFieldHTML = id => `<label>圖示<button type="button" class="icon-btn" id="${id}" aria-expanded="false" title="按一下選擇圖示"></button></label>`;
+const iconPanelHTML = id => `<div class="icon-pick" id="${id}P" hidden></div>`;
+
+/* 圖示選擇器：root 內要有 iconFieldHTML(id) 和 iconPanelHTML(id)；回傳取得目前圖示的函式。
+   withSvg 為 true 時多列出內建的尿布圖（只給管理者的編輯畫面用） */
+function bindIconPicker(root, id, value, withSvg) {
+  const btn = root.querySelector("#" + id), box = root.querySelector("#" + id + "P");
+  let cur = String(value || "").trim() || "💬";
+  const sets = ICON_SETS.map(s => [s[0], s[1].split(" ")]);
+  if (withSvg) sets[2][1] = sets[2][1].concat(Object.keys(ICONS).map(k => "svg:" + k));
+  box.innerHTML = sets.map(s => `<h4>${s[0]}</h4><div class="set">${s[1].map(v => `<button type="button" data-v="${esc(v)}">${iconHTML(v)}</button>`).join("")}</div>`).join("") +
+    `<label>找不到想要的？自己輸入表情符號<input maxlength="8" autocomplete="off"></label>`;
+  const own = box.querySelector("input");
+  const show = () => {
+    btn.innerHTML = `<span class="em" aria-hidden="true">${iconHTML(cur)}</span><small>更換</small>`;
+    box.querySelectorAll("button[data-v]").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === cur ? "true" : "false"));
+  };
+  const toggle = open => { box.hidden = !open; btn.setAttribute("aria-expanded", open ? "true" : "false") };
+  btn.onclick = () => toggle(box.hidden);
+  box.querySelectorAll("button[data-v]").forEach(b => b.onclick = () => { cur = b.dataset.v; own.value = ""; show(); toggle(false) });
+  own.oninput = () => { const v = own.value.trim(); if (v) { cur = v; show() } };
+  show();
+  return () => cur;
+}
+
+/* 中文打完（離開欄位）就自動帶出印尼文；手動改過的印尼文不會被蓋掉，要重翻請按「自動翻譯」 */
+function bindTranslate(zh, idn, btn) {
+  let auto = "", lastZh = zh.value.trim();
+  const run = async manual => {
+    const z = zh.value.trim();
+    if (!z) { if (manual) toast("請先輸入中文"); return }
+    if (!manual && (z === lastZh || (idn.value.trim() && idn.value !== auto))) return;
+    lastZh = z;
+    btn.disabled = true; btn.textContent = "翻譯中…";
+    try { const r = await api("translate", { text: z, from: "zh-TW", to: "id" }); if (zh.value.trim() === z) idn.value = auto = r.text }
+    catch (err) { if (manual && state.token) toast(errPair(err)[0]) }
+    btn.disabled = false; btn.textContent = "自動翻譯";
+  };
+  btn.onclick = () => run(true);
+  zh.addEventListener("change", () => run(false));
+}
+
 /* 把後端回傳的卡片放進本機資料 */
 async function applyCard(card, version) {
   const i = state.data.cards.findIndex(c => c.id === card.id);
@@ -725,9 +775,10 @@ async function applyCard(card, version) {
 
 function renderAdd(m) {
   const admin = state.role === "admin";
-  const p = h("div", "panel", `<h3>新增圖卡</h3><p>生活中遇到常用但沒有的句子，可以自己加。${admin ? "管理者新增的圖卡會直接生效。" : "送出後要等管理者審核，審核前只有家人看得到。"}印尼文可以按「自動翻譯」，重要句子建議請看護確認看得懂。</p>
+  const p = h("div", "panel", `<h3>新增圖卡</h3><p>生活中遇到常用但沒有的句子，可以自己加。${admin ? "管理者新增的圖卡會直接生效。" : "送出後要等管理者審核，審核前只有家人看得到。"}圖示按一下就能從常用圖示裡挑；中文打完後會自動帶出印尼文，重要句子建議請看護確認看得懂。</p>
     <div class="form">
-      <div class="two"><label>圖示<input id="nE" value="💬" maxlength="8"></label><label>放在哪一組<select id="nC">${ADD_CATS.map(c => `<option value="${c[0]}">${c[1]}</option>`).join("")}</select></label></div>
+      <div class="two">${iconFieldHTML("nE")}<label>放在哪一組<select id="nC">${ADD_CATS.map(c => `<option value="${c[0]}">${c[1]}</option>`).join("")}</select></label></div>
+      ${iconPanelHTML("nE")}
       <label>中文<input id="nZ" maxlength="200" placeholder="例如：幫阿公倒茶"></label>
       <label>印尼文<input id="nI" class="idn" lang="id" maxlength="300" placeholder="Bahasa Indonesia"></label>
       <label class="chk"><input type="checkbox" id="nQ"> 這是「要不要／是不是」的問句</label>
@@ -735,18 +786,14 @@ function renderAdd(m) {
     </div>`);
   m.appendChild(p);
   const q = id => p.querySelector(id);
-  q("#nT").onclick = async e => {
-    const z = q("#nZ").value.trim(); if (!z) { toast("請先輸入中文"); return }
-    const b = e.currentTarget; b.disabled = true; b.textContent = "翻譯中…";
-    try { q("#nI").value = (await api("translate", { text: z, from: "zh-TW", to: "id" })).text } catch (err) { if (state.token) toast(errPair(err)[0]) }
-    b.disabled = false; b.textContent = "自動翻譯";
-  };
+  const icon = bindIconPicker(p, "nE", "💬");
+  bindTranslate(q("#nZ"), q("#nI"), q("#nT"));
   q("#nS").onclick = async e => {
     const z = q("#nZ").value.trim(), i = q("#nI").value.trim();
     if (!z || !i) { toast("中文和印尼文都要填"); return }
     const b = e.currentTarget; b.disabled = true;
     try {
-      const r = await api("addCard", { cat: q("#nC").value, icon: q("#nE").value.trim() || "💬", zh: z, id_text: i, is_question: q("#nQ").checked });
+      const r = await api("addCard", { cat: q("#nC").value, icon: icon(), zh: z, id_text: i, is_question: q("#nQ").checked });
       await applyCard(r.card, r.data_version);
       toast(admin ? "已新增圖卡" : "已送出，等管理者審核");
       render();
@@ -916,22 +963,25 @@ function openEditor(c, onDone) {
   const sh = tint($("#sheet"), catOf(c.cat).color);
   const opt = (v, label, cur) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(label)}</option>`;
   sh.innerHTML = `<h3 style="margin:0 0 10px">編輯圖卡</h3><div class="form">
-    <div class="two"><label>圖示<input id="eE" maxlength="24"></label><label>分類<select id="eC">${cats.map(x => opt(x.key, x.zh, c.cat)).join("")}</select></label></div>
+    <div class="two">${iconFieldHTML("eE")}<label>分類<select id="eC">${cats.map(x => opt(x.key, x.zh, c.cat)).join("")}</select></label></div>
+    ${iconPanelHTML("eE")}
     <label>中文<input id="eZ" maxlength="200"></label>
     <label>印尼文<input id="eI" class="idn" lang="id" maxlength="300"></label>
     <div class="two" style="grid-template-columns:1fr 1fr"><label>點開時播放<select id="eP">${[["", "依分類預設"], ["id", "印尼語"], ["tw", "台語錄音"], ["zh", "華語"], ["auto", "依角色"]].map(x => opt(x[0], x[1], c.play)).join("")}</select></label>
     <label>狀態<select id="eS">${[["active", "使用中"], ["pending", "待審核"], ["hidden", "隱藏"]].map(x => opt(x[0], x[1], c.status)).join("")}</select></label></div>
     <div class="two" style="grid-template-columns:1fr 1fr"><label>排序（小的在前）<input id="eO" type="number" inputmode="numeric"></label><label class="chk" style="align-self:end;min-height:48px"><input type="checkbox" id="eQ"> 這是問句</label></div>
-    <div class="btns" style="margin-top:4px"><button class="btn solid" id="eOk">儲存</button><button class="btn" id="eNo">取消</button></div></div>`;
+    <div class="btns" style="margin-top:4px"><button class="btn solid" id="eOk">儲存</button><button class="btn" id="eT">自動翻譯</button><button class="btn" id="eNo">取消</button></div></div>`;
   const q = id => sh.querySelector(id);
-  q("#eE").value = c.icon; q("#eZ").value = c.zh; q("#eI").value = c.id_text; q("#eO").value = c.sort; q("#eQ").checked = c.is_question;
+  q("#eZ").value = c.zh; q("#eI").value = c.id_text; q("#eO").value = c.sort; q("#eQ").checked = c.is_question;
+  const icon = bindIconPicker(sh, "eE", c.icon, true);
+  bindTranslate(q("#eZ"), q("#eI"), q("#eT"));
   q("#eNo").onclick = closeSheet;
   q("#eOk").onclick = async e => {
     const zh = q("#eZ").value.trim(), idt = q("#eI").value.trim();
     if (!zh || !idt) { toast("中文和印尼文都要填"); return }
     const b = e.currentTarget; b.disabled = true;
     try {
-      const r = await api("updateCard", { id: c.id, icon: q("#eE").value.trim() || "💬", cat: q("#eC").value, zh, id_text: idt, play: q("#eP").value, status: q("#eS").value, sort: Number(q("#eO").value) || 0, is_question: q("#eQ").checked });
+      const r = await api("updateCard", { id: c.id, icon: icon(), cat: q("#eC").value, zh, id_text: idt, play: q("#eP").value, status: q("#eS").value, sort: Number(q("#eO").value) || 0, is_question: q("#eQ").checked });
       await applyCard(r.card, r.data_version);
       toast("已儲存");
       closeSheet();
