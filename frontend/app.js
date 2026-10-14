@@ -225,14 +225,14 @@ function syncQuietly() {
   sync(false).then(changed => { if (changed && appStarted && !sheetOpen()) render() }).catch(() => {});
 }
 
-/* 目前時段與提示卡；BATH、GARB 依星期換成對應的卡 */
+/* 目前時段與提示卡；BATH：一三五洗澡、二四六日擦澡；GARB：星期日沒有垃圾車 */
 function currentSlot() {
   const d = new Date(), m = d.getHours() * 60 + d.getMinutes(), dow = d.getDay();
   const toM = s => { const p = String(s).split(":"); return +p[0] * 60 + +p[1] };
   const slots = state.data.slots;
   const s = slots.find(s => m >= toM(s.from) && m < toM(s.to)) || slots[0];
   if (!s) return null;
-  const fix = ids => ids.map(i => i === "BATH" ? ([2, 4, 6].includes(dow) ? "c5" : "c4") : i === "GARB" ? (dow === 0 ? "h5" : "h4") : i);
+  const fix = ids => ids.map(i => i === "BATH" ? ([1, 3, 5].includes(dow) ? "c5" : "c4") : i === "GARB" ? (dow === 0 ? "h5" : "h4") : i);
   return { from: s.from, to: s.to, zh: s.zh, id_text: s.id_text, fam: fix(s.family_cards), car: fix(s.carer_cards) };
 }
 
